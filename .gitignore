@@ -1,0 +1,8 @@
+build/
+*.exe
+*.obj
+*.o
+*.pdb
+*.wasm
+tools/minc/
+tools/minc-*.zip

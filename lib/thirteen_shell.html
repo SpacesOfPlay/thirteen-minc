@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>thirteen-minc</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #1c1c20;
+    }
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    canvas {
+      background: #000;
+      border: 1px solid #333;
+      image-rendering: pixelated;
+      max-width: 95vw;
+      max-height: 95vh;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <script type="module">
+    import { start } from "./thirteen.js";
+    start({
+      wasmPath: "./main.wasm",
+      canvas: document.getElementById("canvas"),
+    }).catch(e => {
+      const pre = document.createElement("pre");
+      pre.textContent = e && e.message ? e.message : String(e);
+      pre.style.cssText = "color:#f88;background:#000;padding:1em;";
+      document.body.appendChild(pre);
+    });
+  </script>
+</body>
+</html>
