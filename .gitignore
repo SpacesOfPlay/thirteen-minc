@@ -4,5 +4,3 @@ build/
 *.o
 *.pdb
 *.wasm
-tools/minc/
-tools/minc-*.zip

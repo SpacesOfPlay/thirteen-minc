@@ -45,25 +45,20 @@ if ($validTargets -contains $Arg0) {
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-# Locate the minc compiler.
-$minc = $null
-$localMinc = Join-Path $root 'tools\minc\minc.exe'
-if (Test-Path $localMinc) {
-    $minc = (Resolve-Path $localMinc).Path
-} else {
+# Locate minc: $env:MINC (install dir, or a direct binary path),
+# then PATH, then next to this script.
+$minc = $env:MINC
+if ($minc -and (Test-Path $minc -PathType Container)) { $minc = Join-Path $minc 'minc.exe' }
+if (-not $minc) {
     $minc = (Get-Command minc.exe -ErrorAction SilentlyContinue).Source
 }
-if (-not $minc) {
-    Write-Host ""
-    Write-Host "minc compiler not found." -ForegroundColor Red
-    Write-Host ""
-    Write-Host "Options:"
-    Write-Host "  1. Auto-fetch the pinned closed-source binary (~1.7 MB):"
-    Write-Host "       .\tools\get_minc.ps1"
-    Write-Host "  2. Install manually from"
-    Write-Host "       https://github.com/SpacesOfPlay/minc-dev/releases"
-    Write-Host "     and put minc.exe on PATH."
-    Write-Host ""
+if (-not $minc) { $minc = Join-Path $root 'minc.exe' }
+if (-not (Test-Path $minc)) {
+    Write-Host ''
+    Write-Host 'minc compiler not found.' -ForegroundColor Red
+    Write-Host 'Install it:  powershell -c "irm minc.dev/install.ps1 | iex"'
+    Write-Host 'or set $env:MINC (see install_minc.md).'
+    Write-Host 'See README.md.'
     exit 1
 }
 

@@ -54,8 +54,9 @@ THE SOFTWARE.
 
 Upstream: <https://github.com/Atrix256/Thirteen>
 
-## minc compiler (`tools/minc/`)
+## minc compiler
 
-`tools/get_minc.{ps1,sh}` downloads a separately-licensed binary.
+Install the separately-licensed `minc` compiler from https://minc.dev
+(see install_minc.md).
 **`minc` is closed-source proprietary software, NOT covered by this
-repo's license.** See `tools/minc/LICENSE.md` after fetching.
+repo's license.** See the LICENSE shipped with your minc install.

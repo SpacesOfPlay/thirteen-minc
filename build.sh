@@ -31,17 +31,20 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Find minc.
-minc=""
-if [[ -x "$root/tools/minc/minc" ]]; then
-    minc="$root/tools/minc/minc"
+# minc: $MINC override (install dir, or a direct binary path), else
+# PATH (installed toolchain), else next
+# to this script (manual zip layout). Install from https://minc.dev.
+if [[ -n "${MINC:-}" ]]; then
+    if [[ -d "$MINC" ]]; then minc="$MINC/minc"; else minc="$MINC"; fi
 elif command -v minc >/dev/null 2>&1; then
     minc="$(command -v minc)"
+else
+    minc="$root/minc"
 fi
-if [[ -z "$minc" ]]; then
-    echo "minc compiler not found." >&2
-    echo "  Run ./tools/get_minc.sh to fetch the pinned closed-source binary," >&2
-    echo "  or install manually from https://github.com/SpacesOfPlay/minc-dev/releases." >&2
+if [[ ! -x "$minc" ]]; then
+    echo "minc compiler not found. Install it:" >&2
+    echo "  curl -fsSL https://minc.dev/install | bash" >&2
+    echo "or set MINC (see install_minc.md)." >&2
     exit 1
 fi
 

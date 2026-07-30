@@ -504,6 +504,7 @@ type LPSTR = u8*;
 type LPCSTR = u8*;
 type LPWSTR = WCHAR*;
 type LPCWSTR = WCHAR*;
+type PCWSTR = WCHAR*;
 type LPBYTE = BYTE*;
 type LPDWORD = DWORD*;
 type LPWORD = WORD*;
@@ -696,6 +697,28 @@ struct RAWINPUT {
     struct {
         RAWMOUSE mouse;
     } data;
+}
+
+struct SYSTEM_INFO {
+    DWORD dwOemId;
+    DWORD dwPageSize;
+    LPVOID lpMinimumApplicationAddress;
+    LPVOID lpMaximumApplicationAddress;
+    DWORD_PTR dwActiveProcessorMask;
+    DWORD dwNumberOfProcessors;
+    DWORD dwProcessorType;
+    DWORD dwAllocationGranularity;
+    WORD wProcessorLevel;
+    WORD wProcessorRevision;
+}
+
+struct CRITICAL_SECTION {
+    PVOID DebugInfo;
+    LONG LockCount;
+    LONG RecursionCount;
+    HANDLE OwningThread;
+    HANDLE LockSemaphore;
+    ULONG_PTR SpinCount;
 }
 
 struct BITMAPV5HEADER {
@@ -1330,23 +1353,23 @@ private { thirteen_uint8* thirteen_pixels_buf = null; }
 // ========== Timing ==========
 private {
 f64 thirteen_now_seconds() {
-    LARGE_INTEGER freq;
-    LARGE_INTEGER counter;
+    noinit LARGE_INTEGER freq;
+    noinit LARGE_INTEGER counter;
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&counter);
     return cast(f64, counter.QuadPart) / cast(f64, freq.QuadPart);
 }
-}
 // ==========================================================================
 // WINDOWS BACKEND
 // ==========================================================================
-private { u16[20] THIRTEEN_WND_CLASS = {84, 104, 105, 114, 116, 101, 101, 110, 87, 105, 110, 100, 111, 119, 67, 108, 97, 115, 115, 0}; }
+u16[20] THIRTEEN_WND_CLASS = {84, 104, 105, 114, 116, 101, 101, 110, 87, 105, 110, 100, 111, 119, 67, 108, 97, 115, 115, 0};
+}
 // --- Platform functions ---
 private {
 bool thirteen_platform_init_window(ThirteenPlatform* p, thirteen_uint32 width, thirteen_uint32 height) {
-    WNDCLASSEXW wc;
+    noinit WNDCLASSEXW wc;
     DWORD style;
-    RECT rect;
+    noinit RECT rect;
     memset(&wc, 0, cast(u64, sizeof(wc)));
     wc.cbSize = cast(UINT, sizeof(WNDCLASSEXW));
     wc.style = CS_HREDRAW | CS_VREDRAW;
@@ -1374,32 +1397,26 @@ bool thirteen_platform_init_window(ThirteenPlatform* p, thirteen_uint32 width, t
     ShowWindow(p.hwnd, SW_SHOW);
     return true;
 }
-}
-private {
 void thirteen_platform_pump_messages(ThirteenPlatform* p) {
-    MSG msg;
+    noinit MSG msg;
     ignore p;
     while PeekMessageW(&msg, null, 0, 0, PM_REMOVE) != 0 {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
 }
-}
-private {
 void thirteen_platform_set_title(ThirteenPlatform* p, u8* title) {
     if p.hwnd != null {
         SetWindowTextA(p.hwnd, title);
     }
 }
-}
-private {
 void thirteen_platform_set_fullscreen(ThirteenPlatform* p, bool fullscreen, thirteen_uint32 width, thirteen_uint32 height) {
     if p.hwnd == null {
         return;
     }
     if fullscreen != 0 {
         HMONITOR hMonitor;
-        MONITORINFO mi;
+        noinit MONITORINFO mi;
         SetWindowLongW(p.hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
         hMonitor = MonitorFromWindow(p.hwnd, MONITOR_DEFAULTTONEAREST);
         mi.cbSize = cast(DWORD, sizeof(mi));
@@ -1407,7 +1424,7 @@ void thirteen_platform_set_fullscreen(ThirteenPlatform* p, bool fullscreen, thir
         SetWindowPos(p.hwnd, null, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_FRAMECHANGED);
     } else {
         DWORD style = WS_OVERLAPPEDWINDOW & ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
-        RECT rect;
+        noinit RECT rect;
         i32 screenWidth;
         i32 screenHeight;
         i32 windowWidth;
@@ -1429,11 +1446,9 @@ void thirteen_platform_set_fullscreen(ThirteenPlatform* p, bool fullscreen, thir
         SetWindowPos(p.hwnd, null, x, y, windowWidth, windowHeight, SWP_FRAMECHANGED);
     }
 }
-}
-private {
 void thirteen_platform_resize_window(ThirteenPlatform* p, thirteen_uint32 width, thirteen_uint32 height, bool isFullscreen) {
     DWORD style;
-    RECT rect;
+    noinit RECT rect;
     i32 screenWidth;
     i32 screenHeight;
     i32 windowWidth;
@@ -1457,13 +1472,9 @@ void thirteen_platform_resize_window(ThirteenPlatform* p, thirteen_uint32 width,
     y = (screenHeight - windowHeight) / 2;
     SetWindowPos(p.hwnd, null, x, y, windowWidth, windowHeight, SWP_FRAMECHANGED);
 }
-}
-private {
 ThirteenNativeWindowHandle thirteen_platform_get_window_handle(ThirteenPlatform* p) {
     return p.hwnd;
 }
-}
-private {
 void thirteen_platform_shutdown_window(ThirteenPlatform* p) {
     if p.hwnd != null {
         DestroyWindow(p.hwnd);
@@ -1474,9 +1485,7 @@ void thirteen_platform_shutdown_window(ThirteenPlatform* p) {
         p.ownsClassRegistration = false;
     }
 }
-}
 // --- Renderer functions ---
-private {
 void thirteen_renderer_wait_for_gpu(ThirteenRenderer* r) {
     UINT64 currentFenceValue;
     if !r.fence || !r.commandQueue {
@@ -1490,8 +1499,6 @@ void thirteen_renderer_wait_for_gpu(ThirteenRenderer* r) {
         WaitForSingleObject(r.fenceEvent, INFINITE);
     }
 }
-}
-private {
 void thirteen_renderer_release_render_targets(ThirteenRenderer* r) {
     if r.renderTargets[0] != null {
         r.renderTargets[0].lpVtbl.Release(r.renderTargets[0]);
@@ -1502,11 +1509,9 @@ void thirteen_renderer_release_render_targets(ThirteenRenderer* r) {
         r.renderTargets[1] = null;
     }
 }
-}
-private {
 bool thirteen_renderer_create_upload_buffer(ThirteenRenderer* r, thirteen_uint32 width, thirteen_uint32 height) {
-    D3D12_HEAP_PROPERTIES heapProps;
-    D3D12_RESOURCE_DESC bufferDesc;
+    noinit D3D12_HEAP_PROPERTIES heapProps;
+    noinit D3D12_RESOURCE_DESC bufferDesc;
     u64 rowBytes;
     u64 pitch;
     memset(&heapProps, 0, cast(u64, sizeof(heapProps)));
@@ -1529,14 +1534,12 @@ bool thirteen_renderer_create_upload_buffer(ThirteenRenderer* r, thirteen_uint32
     bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     return r.device.lpVtbl.CreateCommittedResource(r.device, &heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc, D3D12_RESOURCE_STATE_GENERIC_READ, null, &IID_ID3D12Resource, cast(void**, &r.uploadBuffer)) >= 0;
 }
-}
-private {
 bool thirteen_renderer_init(ThirteenRenderer* r, ThirteenPlatform* p, thirteen_uint32 width, thirteen_uint32 height) {
     ThirteenNativeWindowHandle hwnd = thirteen_platform_get_window_handle(p);
     IDXGIFactory4* factory = null;
     IDXGISwapChain1* swapChain1 = null;
     HRESULT hr;
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle;
+    noinit D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle;
     UINT i;
     if D3D12CreateDevice(null, D3D_FEATURE_LEVEL_11_0, &IID_ID3D12Device, cast(void**, &r.device)) < 0 {
         return false;
@@ -1623,15 +1626,13 @@ bool thirteen_renderer_init(ThirteenRenderer* r, ThirteenPlatform* p, thirteen_u
     r.fenceEvent = CreateEventA(null, FALSE, FALSE, null);
     return r.fenceEvent != null;
 }
-}
-private {
 bool thirteen_renderer_render(ThirteenRenderer* r, thirteen_uint8* pixels, thirteen_uint32 width, thirteen_uint32 height, bool vsyncEnabled) {
     void* mappedData = null;
-    D3D12_RANGE readRange;
-    D3D12_RESOURCE_BARRIER barrier;
-    D3D12_TEXTURE_COPY_LOCATION dst;
-    D3D12_TEXTURE_COPY_LOCATION src;
-    ID3D12CommandList*[1] cmdLists;
+    noinit D3D12_RANGE readRange;
+    noinit D3D12_RESOURCE_BARRIER barrier;
+    noinit D3D12_TEXTURE_COPY_LOCATION dst;
+    noinit D3D12_TEXTURE_COPY_LOCATION src;
+    noinit ID3D12CommandList*[1] cmdLists;
     UINT syncInterval;
     UINT presentFlags;
     thirteen_renderer_wait_for_gpu(r);
@@ -1683,11 +1684,9 @@ bool thirteen_renderer_render(ThirteenRenderer* r, thirteen_uint8* pixels, thirt
     presentFlags = cast(u32, !vsyncEnabled && r.tearingSupported ? DXGI_PRESENT_ALLOW_TEARING : 0);
     return r.swapChain.lpVtbl.Present(r.swapChain, syncInterval, presentFlags) >= 0;
 }
-}
-private {
 bool thirteen_renderer_resize(ThirteenRenderer* r, thirteen_uint32 width, thirteen_uint32 height) {
     HRESULT hr;
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle;
+    noinit D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle;
     UINT i;
     thirteen_renderer_wait_for_gpu(r);
     thirteen_renderer_release_render_targets(r);
@@ -1713,8 +1712,6 @@ bool thirteen_renderer_resize(ThirteenRenderer* r, thirteen_uint32 width, thirte
     r.frameIndex = r.swapChain.lpVtbl.GetCurrentBackBufferIndex(r.swapChain);
     return true;
 }
-}
-private {
 void thirteen_renderer_shutdown(ThirteenRenderer* r) {
     thirteen_renderer_wait_for_gpu(r);
     if r.fenceEvent != null {
@@ -1746,15 +1743,13 @@ void thirteen_renderer_shutdown(ThirteenRenderer* r) {
         r.device.lpVtbl.Release(r.device);
     }
 }
-}
 // ==========================================================================
 // WEB BACKEND
 // ==========================================================================
 // ========== Platform/Renderer Pointers ==========
-private { ThirteenPlatform* thirteen_platform_ptr = null; }
-private { ThirteenRenderer* thirteen_renderer_ptr = null; }
+ThirteenPlatform* thirteen_platform_ptr = null;
+ThirteenRenderer* thirteen_renderer_ptr = null;
 // ========== WndProc (Windows only) ==========
-private {
 LRESULT thirteen_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch msg {
         case WM_DESTROY, WM_CLOSE: {
@@ -1766,7 +1761,7 @@ LRESULT thirteen_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 var rawX = cast(i32, cast(i16, LOWORD(lParam)));
                 var rawY = cast(i32, cast(i16, HIWORD(lParam)));
                 if thirteen_is_fullscreen != 0 {
-                    RECT clientRect;
+                    noinit RECT clientRect;
                     i32 windowWidth;
                     i32 windowHeight;
                     GetClientRect(hwnd, &clientRect);
@@ -1826,8 +1821,8 @@ LRESULT thirteen_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     }
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
-}
 // ========== Public API ==========
+}
 thirteen_uint8* thirteen_init(thirteen_uint32 width, thirteen_uint32 height, bool fullscreen) {
     thirteen_width = width;
     thirteen_height = height;
@@ -1863,10 +1858,11 @@ thirteen_uint8* thirteen_init(thirteen_uint32 width, thirteen_uint32 height, boo
     }
     return thirteen_pixels_buf;
 }
-
+private {
+}
 bool thirteen_render() {
     f64 currentTime;
-    u8[256] titleBuffer;
+    noinit u8[256] titleBuffer;
     thirteen_prev_mouse_x = thirteen_mouse_x;
     thirteen_prev_mouse_y = thirteen_mouse_y;
     memcpy(thirteen_prev_mouse_buttons, thirteen_mouse_buttons, cast(u64, sizeof(thirteen_mouse_buttons)));
@@ -1901,19 +1897,23 @@ bool thirteen_render() {
     thirteen_renderer_render(thirteen_renderer_ptr, thirteen_pixels_buf, thirteen_width, thirteen_height, thirteen_vsync_enabled);
     return !thirteen_should_quit;
 }
-
+private {
+}
 void thirteen_set_vsync(bool enabled) {
     thirteen_vsync_enabled = enabled;
 }
-
+private {
+}
 bool thirteen_get_vsync() {
     return thirteen_vsync_enabled;
 }
-
+private {
+}
 void thirteen_set_application_name(u8* name) {
     _thirteen_strcpy(thirteen_app_name, sizeof(thirteen_app_name), name);
 }
-
+private {
+}
 void thirteen_set_fullscreen(bool fullscreen) {
     if thirteen_is_fullscreen == fullscreen {
         return;
@@ -1923,23 +1923,28 @@ void thirteen_set_fullscreen(bool fullscreen) {
         thirteen_platform_set_fullscreen(thirteen_platform_ptr, fullscreen, thirteen_width, thirteen_height);
     }
 }
-
+private {
+}
 bool thirteen_get_fullscreen() {
     return thirteen_is_fullscreen;
 }
-
+private {
+}
 thirteen_uint32 thirteen_get_width() {
     return thirteen_width;
 }
-
+private {
+}
 thirteen_uint32 thirteen_get_height() {
     return thirteen_height;
 }
-
+private {
+}
 ThirteenNativeWindowHandle thirteen_get_window_handle() {
     return thirteen_platform_get_window_handle(thirteen_platform_ptr);
 }
-
+private {
+}
 thirteen_uint8* thirteen_set_size(thirteen_uint32 width, thirteen_uint32 height) {
     thirteen_uint8* reallocResult;
     if width == thirteen_width && height == thirteen_height {
@@ -1960,49 +1965,57 @@ thirteen_uint8* thirteen_set_size(thirteen_uint32 width, thirteen_uint32 height)
     }
     return thirteen_pixels_buf;
 }
-
+private {
+}
 f64 thirteen_get_delta_time() {
     return thirteen_last_delta_time;
 }
-
+private {
+}
 void thirteen_get_mouse_position(i32* x, i32* y) {
     *x = thirteen_mouse_x;
     *y = thirteen_mouse_y;
 }
-
+private {
+}
 void thirteen_get_mouse_position_last_frame(i32* x, i32* y) {
     *x = thirteen_prev_mouse_x;
     *y = thirteen_prev_mouse_y;
 }
-
+private {
+}
 bool thirteen_get_mouse_button(i32 button) {
     if button >= 0 && button < 3 {
         return thirteen_mouse_buttons[button];
     }
     return false;
 }
-
+private {
+}
 bool thirteen_get_mouse_button_last_frame(i32 button) {
     if button >= 0 && button < 3 {
         return thirteen_prev_mouse_buttons[button];
     }
     return false;
 }
-
+private {
+}
 bool thirteen_get_key(i32 keyCode) {
     if keyCode >= 0 && keyCode < 256 {
         return thirteen_keys[keyCode];
     }
     return false;
 }
-
+private {
+}
 bool thirteen_get_key_last_frame(i32 keyCode) {
     if keyCode >= 0 && keyCode < 256 {
         return thirteen_prev_keys[keyCode];
     }
     return false;
 }
-
+private {
+}
 void thirteen_shutdown() {
     if thirteen_renderer_ptr != null {
         thirteen_renderer_shutdown(thirteen_renderer_ptr);
@@ -2017,7 +2030,8 @@ void thirteen_shutdown() {
     free(thirteen_pixels_buf);
     thirteen_pixels_buf = null;
 }
-
+private {
+}
 
 }
 
@@ -2141,6 +2155,15 @@ when os(linux) {
 @define "VK_ESCAPE" 27
 @define "VK_SPACE" 32
 
+enum __enum_XkbKeyNameLength {
+    XkbKeyNameLength = 4,
+}
+
+enum __enum_XIAllMasterDevices {
+    XIAllMasterDevices = 1,
+    XI_RawMotion = 17,
+}
+
 type XID = u64;
 type VisualID = u64;
 type Time = u64;
@@ -2163,13 +2186,19 @@ type Screen = _XScreen;
 type XrmDatabase = _XrmHashBucketRec*;
 type XIC = _XIC_*;
 type XIM = _XIM_*;
-type GLXContext = _GLXcontextRec*;
-type GLXFBConfig = _GLXFBConfigRec*;
+type GLXContext = __GLXcontext*;
+type GLXFBConfig = __GLXFBConfig*;
 type GLuint = u32;
 type GLsizei = i32;
 type GLbitfield = u32;
 type GLubyte = u8;
 type XComposeStatus = _XComposeStatus;
+type XkbNamesPtr = XkbNamesRec*;
+type XkbDescRec = _XkbDesc;
+type XkbDescPtr = XkbDescRec*;
+type XcursorPixel = u32;
+type XcursorDim = u32;
+type XcursorBool = u32;
 // ========== Platform-Specific Includes ==========
 // ========== Common Includes ==========
 // ========== Type Definitions ==========
@@ -2223,11 +2252,11 @@ struct _XIM_ {
     i32 _opaque;
 }
 
-struct _GLXcontextRec {
+struct __GLXcontext {
     i32 _opaque;
 }
 
-struct _GLXFBConfigRec {
+struct __GLXFBConfig {
     i32 _opaque;
 }
 
@@ -2452,6 +2481,52 @@ struct XErrorEvent {
     u8 minor_code;
 }
 
+struct XFocusChangeEvent {
+    i32 type;
+    u64 serial;
+    Bool send_event;
+    Display* display;
+    Window window;
+    i32 mode;
+    i32 detail;
+}
+
+struct XSelectionEvent {
+    i32 type;
+    u64 serial;
+    Bool send_event;
+    Display* display;
+    Window requestor;
+    Atom selection;
+    Atom target;
+    Atom property;
+    Time time;
+}
+
+struct XSelectionRequestEvent {
+    i32 type;
+    u64 serial;
+    Bool send_event;
+    Display* display;
+    Window owner;
+    Window requestor;
+    Atom selection;
+    Atom target;
+    Atom property;
+    Time time;
+}
+
+struct XGenericEventCookie {
+    i32 type;
+    u64 serial;
+    Bool send_event;
+    Display* display;
+    i32 extension;
+    i32 evtype;
+    u32 cookie;
+    void* data;
+}
+
 unsafe_union XEvent {
     i32 type;
     XAnyEvent xany;
@@ -2462,7 +2537,102 @@ unsafe_union XEvent {
     XConfigureEvent xconfigure;
     XClientMessageEvent xclient;
     XPropertyEvent xproperty;
+    XFocusChangeEvent xfocus;
+    XSelectionEvent xselection;
+    XSelectionRequestEvent xselectionrequest;
+    XGenericEventCookie xcookie;
     i64[24] pad;
+}
+
+struct XkbKeyNameRec {
+    u8[4] name;
+}
+
+struct XkbKeyAliasRec {
+    u8[4] real;
+    u8[4] alias;
+}
+
+struct XkbNamesRec {
+    Atom keycodes;
+    Atom geometry;
+    Atom symbols;
+    Atom types;
+    Atom compat;
+    Atom[16] vmods;
+    Atom[32] indicators;
+    Atom[4] groups;
+    XkbKeyNameRec* keys;
+    XkbKeyAliasRec* key_aliases;
+    Atom* radio_groups;
+    Atom phys_symbols;
+    u8 num_keys;
+    u8 num_key_aliases;
+    u16 num_rg;
+}
+
+struct _XkbDesc {
+    void* dpy;
+    u16 flags;
+    u16 device_spec;
+    u8 min_key_code;
+    u8 max_key_code;
+    void* ctrls;
+    void* server;
+    void* map;
+    void* indicators;
+    XkbNamesPtr names;
+    void* compat;
+    void* geom;
+}
+
+struct XcursorImage {
+    u32 version;
+    XcursorDim size;
+    XcursorDim width;
+    XcursorDim height;
+    XcursorDim xhot;
+    XcursorDim yhot;
+    u32 delay;
+    XcursorPixel* pixels;
+}
+
+struct XIEventMask {
+    i32 deviceid;
+    i32 mask_len;
+    u8* mask;
+}
+
+struct XIValuatorState {
+    i32 mask_len;
+    u8* mask;
+    f64* values;
+}
+
+struct XIRawEvent {
+    i32 type;
+    u64 serial;
+    Bool send_event;
+    Display* display;
+    i32 extension;
+    i32 evtype;
+    Time time;
+    i32 deviceid;
+    i32 sourceid;
+    i32 detail;
+    i32 flags;
+    XIValuatorState valuators;
+    f64* raw_values;
+}
+
+struct pthread_attr_t {
+    i64[8] _opaque;
+}
+
+struct pollfd {
+    i32 fd;
+    i16 events;
+    i16 revents;
 }
 
 // ==========================================================================
@@ -2541,8 +2711,6 @@ f64 thirteen_now_seconds() {
         return cast(f64, ts.tv_sec) + cast(f64, ts.tv_nsec) / 1000000000.0;
     }
 }
-}
-private {
 i32 thirteen_platform_remap_mouse_button(i32 x11Button) {
     switch x11Button {
         case 1: {
@@ -2559,8 +2727,6 @@ i32 thirteen_platform_remap_mouse_button(i32 x11Button) {
         }
     }
 }
-}
-private {
 i32 thirteen_platform_remap_key_event(ThirteenPlatform* p, XKeyEvent* event) {
     KeySym keysym = 0;
     u8[8] buf;
@@ -2570,8 +2736,6 @@ i32 thirteen_platform_remap_key_event(ThirteenPlatform* p, XKeyEvent* event) {
     }
     return buf[0];
 }
-}
-private {
 bool thirteen_platform_init_window(ThirteenPlatform* p, thirteen_uint32 width, thirteen_uint32 height) {
     fn(u8*): Display* XOpenDisplay;
     fn(Display*, i32): Screen* XScreenOfDisplay;
@@ -2591,7 +2755,7 @@ bool thirteen_platform_init_window(ThirteenPlatform* p, thirteen_uint32 width, t
     GLXFBConfig fbConfig;
     XVisualInfo* visualInfo;
     Window rootWindow;
-    XSetWindowAttributes windowAttributes;
+    noinit XSetWindowAttributes windowAttributes;
     XSizeHints* sizeHints;
     u8* closeWindowName = "WM_DELETE_WINDOW";
     i32[7] glxContextAttributes = {GLX_CONTEXT_MAJOR_VERSION_ARB, 3, GLX_CONTEXT_MINOR_VERSION_ARB, 2, GLX_CONTEXT_PROFILE_MASK_ARB, GLX_CONTEXT_CORE_PROFILE_BIT_ARB, None};
@@ -2789,8 +2953,6 @@ bool thirteen_platform_init_window(ThirteenPlatform* p, thirteen_uint32 width, t
     p.glFramebufferTexture(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, p.texture, 0);
     return true;
 }
-}
-private {
 void thirteen_platform_pump_messages(ThirteenPlatform* p) {
     XEvent event;
     while p.XPending(p.x11Display) != 0 {
@@ -2832,35 +2994,25 @@ void thirteen_platform_pump_messages(ThirteenPlatform* p) {
         }
     }
 }
-}
-private {
 void thirteen_platform_set_title(ThirteenPlatform* p, u8* title) {
     p.XStoreName(p.x11Display, p.x11Window, title);
 }
-}
-private {
 void thirteen_platform_set_fullscreen(ThirteenPlatform* p, bool fullscreen, thirteen_uint32 width, thirteen_uint32 height) {
     ignore p;
     ignore fullscreen;
     ignore width;
     ignore height;
 }
-}
-private {
 void thirteen_platform_resize_window(ThirteenPlatform* p, thirteen_uint32 width, thirteen_uint32 height, bool isFullscreen) {
     ignore isFullscreen;
     p.XResizeWindow(p.x11Display, p.x11Window, width, height);
     p.glBindTexture(GL_TEXTURE_2D, p.texture);
     p.glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, cast(i32, width), cast(i32, height), 0, GL_RGBA, GL_UNSIGNED_BYTE, null);
 }
-}
-private {
 ThirteenNativeWindowHandle thirteen_platform_get_window_handle(ThirteenPlatform* p) {
     ignore p;
     return 0;
 }
-}
-private {
 bool thirteen_platform_do_render(ThirteenPlatform* p, thirteen_uint8* pixels) {
     p.glClear(GL_COLOR_BUFFER_BIT);
     p.glBindTexture(GL_TEXTURE_2D, p.texture);
@@ -2871,8 +3023,6 @@ bool thirteen_platform_do_render(ThirteenPlatform* p, thirteen_uint8* pixels) {
     p.glXSwapBuffers(p.x11Display, p.x11Window);
     return true;
 }
-}
-private {
 void thirteen_platform_shutdown_window(ThirteenPlatform* p) {
     p.glDeleteFramebuffers(1, &p.framebuffer);
     p.glDeleteTextures(1, &p.texture);
@@ -2882,43 +3032,35 @@ void thirteen_platform_shutdown_window(ThirteenPlatform* p) {
     dlclose(p.glLibrary);
     dlclose(p.x11Library);
 }
-}
-private {
 bool thirteen_renderer_init(ThirteenRenderer* r, ThirteenPlatform* p, thirteen_uint32 w, thirteen_uint32 h) {
     ignore w;
     ignore h;
     r.platform = p;
     return true;
 }
-}
-private {
 bool thirteen_renderer_render(ThirteenRenderer* r, thirteen_uint8* pixels, thirteen_uint32 w, thirteen_uint32 h, bool vsync) {
     ignore w;
     ignore h;
     ignore vsync;
     return thirteen_platform_do_render(r.platform, pixels);
 }
-}
-private {
 bool thirteen_renderer_resize(ThirteenRenderer* r, thirteen_uint32 w, thirteen_uint32 h) {
     ignore r;
     ignore w;
     ignore h;
     return true;
 }
-}
-private {
 void thirteen_renderer_shutdown(ThirteenRenderer* r) {
     ignore r;
-}
 }
 // ==========================================================================
 // STUB BACKEND
 // ==========================================================================
 // ========== Platform/Renderer Pointers ==========
-private { ThirteenPlatform* thirteen_platform_ptr = null; }
-private { ThirteenRenderer* thirteen_renderer_ptr = null; }
+ThirteenPlatform* thirteen_platform_ptr = null;
+ThirteenRenderer* thirteen_renderer_ptr = null;
 // ========== Public API ==========
+}
 thirteen_uint8* thirteen_init(thirteen_uint32 width, thirteen_uint32 height, bool fullscreen) {
     thirteen_width = width;
     thirteen_height = height;
@@ -2954,10 +3096,11 @@ thirteen_uint8* thirteen_init(thirteen_uint32 width, thirteen_uint32 height, boo
     }
     return thirteen_pixels_buf;
 }
-
+private {
+}
 bool thirteen_render() {
     f64 currentTime;
-    u8[256] titleBuffer;
+    noinit u8[256] titleBuffer;
     thirteen_prev_mouse_x = thirteen_mouse_x;
     thirteen_prev_mouse_y = thirteen_mouse_y;
     memcpy(thirteen_prev_mouse_buttons, thirteen_mouse_buttons, cast(u64, sizeof(thirteen_mouse_buttons)));
@@ -2992,19 +3135,23 @@ bool thirteen_render() {
     thirteen_renderer_render(thirteen_renderer_ptr, thirteen_pixels_buf, thirteen_width, thirteen_height, thirteen_vsync_enabled);
     return !thirteen_should_quit;
 }
-
+private {
+}
 void thirteen_set_vsync(bool enabled) {
     thirteen_vsync_enabled = enabled;
 }
-
+private {
+}
 bool thirteen_get_vsync() {
     return thirteen_vsync_enabled;
 }
-
+private {
+}
 void thirteen_set_application_name(u8* name) {
     _thirteen_strcpy(thirteen_app_name, sizeof(thirteen_app_name), name);
 }
-
+private {
+}
 void thirteen_set_fullscreen(bool fullscreen) {
     if thirteen_is_fullscreen == fullscreen {
         return;
@@ -3014,23 +3161,28 @@ void thirteen_set_fullscreen(bool fullscreen) {
         thirteen_platform_set_fullscreen(thirteen_platform_ptr, fullscreen, thirteen_width, thirteen_height);
     }
 }
-
+private {
+}
 bool thirteen_get_fullscreen() {
     return thirteen_is_fullscreen;
 }
-
+private {
+}
 thirteen_uint32 thirteen_get_width() {
     return thirteen_width;
 }
-
+private {
+}
 thirteen_uint32 thirteen_get_height() {
     return thirteen_height;
 }
-
+private {
+}
 ThirteenNativeWindowHandle thirteen_get_window_handle() {
     return thirteen_platform_get_window_handle(thirteen_platform_ptr);
 }
-
+private {
+}
 thirteen_uint8* thirteen_set_size(thirteen_uint32 width, thirteen_uint32 height) {
     thirteen_uint8* reallocResult;
     if width == thirteen_width && height == thirteen_height {
@@ -3051,49 +3203,57 @@ thirteen_uint8* thirteen_set_size(thirteen_uint32 width, thirteen_uint32 height)
     }
     return thirteen_pixels_buf;
 }
-
+private {
+}
 f64 thirteen_get_delta_time() {
     return thirteen_last_delta_time;
 }
-
+private {
+}
 void thirteen_get_mouse_position(i32* x, i32* y) {
     *x = thirteen_mouse_x;
     *y = thirteen_mouse_y;
 }
-
+private {
+}
 void thirteen_get_mouse_position_last_frame(i32* x, i32* y) {
     *x = thirteen_prev_mouse_x;
     *y = thirteen_prev_mouse_y;
 }
-
+private {
+}
 bool thirteen_get_mouse_button(i32 button) {
     if button >= 0 && button < 3 {
         return thirteen_mouse_buttons[button];
     }
     return false;
 }
-
+private {
+}
 bool thirteen_get_mouse_button_last_frame(i32 button) {
     if button >= 0 && button < 3 {
         return thirteen_prev_mouse_buttons[button];
     }
     return false;
 }
-
+private {
+}
 bool thirteen_get_key(i32 keyCode) {
     if keyCode >= 0 && keyCode < 256 {
         return thirteen_keys[keyCode];
     }
     return false;
 }
-
+private {
+}
 bool thirteen_get_key_last_frame(i32 keyCode) {
     if keyCode >= 0 && keyCode < 256 {
         return thirteen_prev_keys[keyCode];
     }
     return false;
 }
-
+private {
+}
 void thirteen_shutdown() {
     if thirteen_renderer_ptr != null {
         thirteen_renderer_shutdown(thirteen_renderer_ptr);
@@ -3108,29 +3268,18 @@ void thirteen_shutdown() {
     free(thirteen_pixels_buf);
     thirteen_pixels_buf = null;
 }
-
+private {
+}
 
 }
 
 // ----------------------------------------------------------------------------
 // macOS arm (Cocoa + Metal)
 // ----------------------------------------------------------------------------
-// cocoa_consts.mc — curated Cocoa value constants + data globals the
-// transpiled sokol_app macOS arm references. Split out of
-// cocoa_objc.mc's tail: that file bundles a hermetic *bridge mirror*
-// (struct objc_super / ObjcMsgTable / libobjc stubs) with these
-// constants, for the off-Mac compile gate. For a REAL on-Mac build the
-// bridge comes from `import objc_runtime` (../minc/lib/objc_runtime.mc,
-// dlsym-backed) — but that module does NOT carry these AppKit/Foundation
-// constants, so they live here and are concatenated alongside it.
-//
-// Concatenate AFTER the bridge and BEFORE the transpiled .mc.
-//
-// The data globals (NSApp, NSDefaultRunLoopMode, NSPasteboardTypeString)
-// are declared null here and must be initialised at runtime from the
-// frameworks (dlsym / sharedApplication) before sapp_run — see the
-// macOS demo main. Values are the real enum/bitmask constants (system-
-// API facts, like win32gl_shim's WM_*/WS_*).
+// Cocoa / AppKit / Foundation constants + data globals (macOS/iOS).
+// The data globals (NSApp, etc.) are declared null here and must be
+// initialised at runtime from the frameworks (dlsym / sharedApplication)
+// before sapp_run.
 
 when os(macos) || os(ios) {
 
@@ -3157,8 +3306,7 @@ const u64 NSEventModifierFlagCommand    = 1048576;
 // NSEvent type / subtype (used to synthesize an app-activation event)
 const u64 NSEventTypeAppKitDefined            = 13;
 const i32 NSEventSubtypeApplicationActivated  = 1;
-// Foundation's zero point ({0,0}); the foreground-kick passes it as the
-// synthetic event's location. A plain zero-init global (mirrors v1).
+// Foundation's zero point ({0,0}); a plain zero-init global.
 NSPoint NSZeroPoint;
 // NSEventMask = 1 << NSEventType. KeyUp type is 11.
 const u64 NSEventMaskKeyUp                     = 2048;
@@ -3186,14 +3334,13 @@ const u32 NSOpenGLPFAOpenGLProfile = 99;
 const u32 NSOpenGLProfileVersion3_2Core = 12800;
 const i32 NSOpenGLContextParameterSwapInterval = 222;
 
-// Run-loop mode + pasteboard type — Cocoa NSString* globals, linked at load
-// (data externs) so reading the name yields the framework's constant
-// directly; no dlsym. Frameworks are .tbd-verified: the run-loop modes are
-// CoreFoundation symbols (toll-free bridged, NOT Foundation); the pasteboard
-// type is AppKit. (Both already linked via objc_classref binds.)
+// Run-loop mode + pasteboard type — Cocoa NSString* globals, linked at
+// load. The run-loop modes are CoreFoundation symbols (toll-free bridged,
+// not Foundation); the pasteboard type is AppKit.
 extern "CoreFoundation" void* NSDefaultRunLoopMode;
 extern "CoreFoundation" void* NSRunLoopCommonModes;
-extern "AppKit" void* NSPasteboardTypeString;
+// AppKit: used by the macOS clipboard path.
+when os(macos) { extern "AppKit" void* NSPasteboardTypeString; }
 
 const u64 NSStringEncodingUTF8 = 4;
 
@@ -3227,14 +3374,15 @@ const u64 NSDragOperationPrivate = 8;
 const u64 NSDragOperationMove    = 16;
 const u64 NSDragOperationDelete  = 32;
 const u64 NSDragOperationEvery   = 18446744073709551615;   // NSUIntegerMax
-// NSColorSpaceName (an NSString* global) — AppKit, linked at load.
-extern "AppKit" void* NSCalibratedRGBColorSpace;
+// NSColorSpaceName (an NSString* global): 
+// used by the macOS window-icon path.
+when os(macos) { extern "AppKit" void* NSCalibratedRGBColorSpace; }
 
 // --- Metal / MetalKit -----------------------------------------
 // The one Metal C entry point (the rest of Metal is Objective-C, sent
 // through the runtime bridge). Metal enum constants are in
 // cocoa_metal_consts.mc.
-extern "/System/Library/Frameworks/Metal.framework/Metal" void* MTLCreateSystemDefaultDevice();
+extern "Metal" void* MTLCreateSystemDefaultDevice();
 const u64 MTLCPUCacheModeDefaultCache = 0;
 const u64 MTLCPUCacheModeWriteCombined = 1;
 
@@ -3256,11 +3404,11 @@ void* DISPATCH_DATA_DESTRUCTOR_DEFAULT = null;
 // --- CoreFoundation / CoreGraphics ----------------------------
 // C entry points for the window-icon (CGImage from pixels) and
 // cursor show/hide paths.
-extern "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation" {
+extern "CoreFoundation" {
     void* CFDataCreate(void* allocator, void* bytes, i64 length);
     void  CFRelease(void* cf);
 }
-extern "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics" {
+extern "CoreGraphics" {
     void* CGColorSpaceCreateDeviceRGB();
     void  CGColorSpaceRelease(void* space);
     void* CGDataProviderCreateWithCFData(void* data);
@@ -3288,22 +3436,16 @@ const u32 kCGRenderingIntentDefault  = 0;
 // externs). The macOS twin of ext/win32_thirteen.mc: a per-OS hand
 // shim concatenated AHEAD of the transpiled body.
 //
-// The Foundation/CoreGraphics geometry constructors (CGRectMake etc.)
-// are `static inline` in <CoreGraphics/CGGeometry.h>; transminc parses
-// ext/cocoa_types.h types-only, so the inline bodies don't survive the
-// transpile. Re-declare them here. CGRect/CGSize/CGPoint come from the
-// transpiled cocoa_types.h (layout-identical to the system structs).
+// The Foundation/CoreGraphics geometry constructors (CGSizeMake /
+// CGPointMake) are `static inline` in <CoreGraphics/CGGeometry.h>;
+// transminc parses ext/cocoa_types.h types-only for those, so the inline
+// bodies don't survive the transpile. Re-declare them here. CGRectMake is
+// NOT re-declared: ext/cocoa_types.h carries a `static CGRectMake` whose
+// body DOES transpile into the macOS arm, so a copy here would be a
+// duplicate definition. CGRect/CGSize/CGPoint come from the transpiled
+// cocoa_types.h (layout-identical to the system structs).
 
 when os(macos) {
-
-CGRect CGRectMake(f64 x, f64 y, f64 w, f64 h) {
-    CGRect r;
-    r.origin.x = x;
-    r.origin.y = y;
-    r.size.width = w;
-    r.size.height = h;
-    return r;
-}
 
 CGSize CGSizeMake(f64 w, f64 h) {
     CGSize s;
@@ -3355,14 +3497,17 @@ type CFDataRef = void*;
 type CGColorSpaceRef = void*;
 type CGDataProviderRef = void*;
 type CGImageRef = void*;
-type NSImageView = void;
-type NSDockTile = void;
-type id = void*;
+private { type NSImageView = void; }
+private { type NSDockTile = void; }
+type ObjcId = void*;
 type SEL = void*;
 type Class = void*;
 type IMP = void*;
 type Protocol = void*;
 type instancetype = void*;
+type NSPoint = CGPoint;
+type NSSize = CGSize;
+type NSRect = CGRect;
 type NSEventModifierFlags = NSUInteger;
 type NSEventMask = NSUInteger;
 type NSWindowStyleMask = NSUInteger;
@@ -3380,70 +3525,90 @@ type NSViewLayerContentsPlacement = NSInteger;
 type NSApplicationDelegateReply = NSInteger;
 type NSModalResponse = NSInteger;
 type NSWindowLevel = NSInteger;
-type NSObject = void;
-type NSNull = void;
-type NSString = void;
-type NSArray = void;
-type NSDictionary = void;
-type NSSet = void;
-type NSMutableArray = void;
-type NSMutableDictionary = void;
-type NSData = void;
-type NSDate = void;
-type NSError = void;
-type NSNotification = void;
-type NSNotificationCenter = void;
-type NSValue = void;
-type NSNumber = void;
-type NSURL = void;
-type NSBundle = void;
-type NSProcessInfo = void;
-type NSThread = void;
-type NSRunLoop = void;
-type NSApplication = void;
-type NSWindow = void;
-type NSView = void;
-type NSScreen = void;
-type NSEvent = void;
-type NSResponder = void;
-type NSColor = void;
-type NSCursor = void;
-type NSImage = void;
-type NSBitmapImageRep = void;
-type NSMenu = void;
-type NSMenuItem = void;
-type NSTimer = void;
-type NSTrackingArea = void;
-type NSPasteboard = void;
-type NSPasteboardType = void;
-type NSString_ = void;
-type NSOpenGLContext = void;
-type NSOpenGLPixelFormat = void;
-type NSOpenGLView = void;
-type NSColorSpace = void;
-type NSTextField = void;
-type NSTextView = void;
-type NSDraggingInfo = void;
-type NSFileManager = void;
-type CALayer = void;
-type CAMetalLayer = void;
-type CADisplayLink = void;
-type NSAutoreleasePool = void;
+private { type NSObject = void; }
+private { type NSNull = void; }
+private { type NSString = void; }
+private { type NSArray = void; }
+private { type NSDictionary = void; }
+private { type NSSet = void; }
+private { type NSMutableArray = void; }
+private { type NSMutableDictionary = void; }
+private { type NSData = void; }
+private { type NSDate = void; }
+private { type NSError = void; }
+private { type NSNotification = void; }
+private { type NSNotificationCenter = void; }
+private { type NSEnumerator = void; }
+private { type NSValue = void; }
+private { type NSNumber = void; }
+private { type NSURL = void; }
+private { type NSBundle = void; }
+private { type NSProcessInfo = void; }
+private { type NSThread = void; }
+private { type NSRunLoop = void; }
+private { type NSApplication = void; }
+private { type NSWindow = void; }
+private { type NSView = void; }
+private { type NSScreen = void; }
+private { type UIApplication = void; }
+private { type UIWindow = void; }
+private { type UIView = void; }
+private { type UIViewController = void; }
+private { type UIScreen = void; }
+private { type UIWindowScene = void; }
+private { type UIScene = void; }
+private { type UISceneSession = void; }
+private { type UISceneConfiguration = void; }
+private { type UISceneConnectionOptions = void; }
+private { type UIResponder = void; }
+private { type UIEvent = void; }
+private { type UITouch = void; }
+private { type UIPress = void; }
+private { type UIPressesEvent = void; }
+private { type UITextField = void; }
+private { type GLKView = void; }
+private { type GLKViewController = void; }
+private { type EAGLContext = void; }
+private { type NSEvent = void; }
+private { type NSResponder = void; }
+private { type NSColor = void; }
+private { type NSCursor = void; }
+private { type NSImage = void; }
+private { type NSBitmapImageRep = void; }
+private { type NSMenu = void; }
+private { type NSMenuItem = void; }
+private { type NSTimer = void; }
+private { type NSTrackingArea = void; }
+private { type NSPasteboard = void; }
+private { type NSPasteboardType = void; }
+private { type NSString_ = void; }
+private { type NSOpenGLContext = void; }
+private { type NSOpenGLPixelFormat = void; }
+private { type NSOpenGLView = void; }
+private { type NSColorSpace = void; }
+private { type NSTextField = void; }
+private { type NSTextView = void; }
+private { type NSDraggingInfo = void; }
+private { type NSFileManager = void; }
+private { type CALayer = void; }
+private { type CAMetalLayer = void; }
+private { type CADisplayLink = void; }
+private { type NSAutoreleasePool = void; }
 type MTLPixelFormat = NSUInteger;
-type MTKView = void;
-type MTKViewDelegate = void;
-type MTLDevice = void;
-type MTLCommandQueue = void;
-type MTLCommandBuffer = void;
-type MTLRenderCommandEncoder = void;
-type MTLRenderPassDescriptor = void;
-type MTLRenderPipelineState = void;
-type MTLDrawable = void;
-type CAMetalDrawable = void;
-type MTLTexture = void;
-type MTLLibrary = void;
-type MTLFunction = void;
-type MTLBuffer = void;
+private { type MTKView = void; }
+private { type MTKViewDelegate = void; }
+private { type MTLDevice = void; }
+private { type MTLCommandQueue = void; }
+private { type MTLCommandBuffer = void; }
+private { type MTLRenderCommandEncoder = void; }
+private { type MTLRenderPassDescriptor = void; }
+private { type MTLRenderPipelineState = void; }
+private { type MTLDrawable = void; }
+private { type CAMetalDrawable = void; }
+private { type MTLTexture = void; }
+private { type MTLLibrary = void; }
+private { type MTLFunction = void; }
+private { type MTLBuffer = void; }
 type MTLPrimitiveType = NSUInteger;
 type MTLIndexType = NSUInteger;
 type MTLCullMode = NSUInteger;
@@ -3474,34 +3639,34 @@ type MTLFeatureSet = NSUInteger;
 type MTLClipMode = NSUInteger;
 type MTLDepthClipMode = NSUInteger;
 type MTLTriangleFillMode = NSUInteger;
-type MTLCommandEncoder = void;
-type MTLBlitCommandEncoder = void;
-type MTLComputeCommandEncoder = void;
-type MTLDepthStencilState = void;
-type MTLSamplerState = void;
-type MTLComputePipelineState = void;
-type MTLComputePipelineDescriptor = void;
-type MTLTextureDescriptor = void;
-type MTLRenderPipelineDescriptor = void;
-type MTLSamplerDescriptor = void;
-type MTLStencilDescriptor = void;
-type MTLDepthStencilDescriptor = void;
-type MTLVertexDescriptor = void;
-type MTLCompileOptions = void;
-type MTLRenderPipelineReflection = void;
-type MTLArgument = void;
-type MTLFunctionConstantValues = void;
-type MTLRenderPipelineColorAttachmentDescriptor = void;
-type MTLRenderPipelineColorAttachmentDescriptorArray = void;
-type MTLVertexAttributeDescriptor = void;
-type MTLVertexAttributeDescriptorArray = void;
-type MTLVertexBufferLayoutDescriptor = void;
-type MTLVertexBufferLayoutDescriptorArray = void;
-type MTLRenderPassColorAttachmentDescriptor = void;
-type MTLRenderPassColorAttachmentDescriptorArray = void;
-type MTLRenderPassDepthAttachmentDescriptor = void;
-type MTLRenderPassStencilAttachmentDescriptor = void;
-type MTLStencilAttachmentDescriptor = void;
+private { type MTLCommandEncoder = void; }
+private { type MTLBlitCommandEncoder = void; }
+private { type MTLComputeCommandEncoder = void; }
+private { type MTLDepthStencilState = void; }
+private { type MTLSamplerState = void; }
+private { type MTLComputePipelineState = void; }
+private { type MTLComputePipelineDescriptor = void; }
+private { type MTLTextureDescriptor = void; }
+private { type MTLRenderPipelineDescriptor = void; }
+private { type MTLSamplerDescriptor = void; }
+private { type MTLStencilDescriptor = void; }
+private { type MTLDepthStencilDescriptor = void; }
+private { type MTLVertexDescriptor = void; }
+private { type MTLCompileOptions = void; }
+private { type MTLRenderPipelineReflection = void; }
+private { type MTLArgument = void; }
+private { type MTLFunctionConstantValues = void; }
+private { type MTLRenderPipelineColorAttachmentDescriptor = void; }
+private { type MTLRenderPipelineColorAttachmentDescriptorArray = void; }
+private { type MTLVertexAttributeDescriptor = void; }
+private { type MTLVertexAttributeDescriptorArray = void; }
+private { type MTLVertexBufferLayoutDescriptor = void; }
+private { type MTLVertexBufferLayoutDescriptorArray = void; }
+private { type MTLRenderPassColorAttachmentDescriptor = void; }
+private { type MTLRenderPassColorAttachmentDescriptorArray = void; }
+private { type MTLRenderPassDepthAttachmentDescriptor = void; }
+private { type MTLRenderPassStencilAttachmentDescriptor = void; }
+private { type MTLStencilAttachmentDescriptor = void; }
 type dispatch_semaphore_t = void*;
 type dispatch_data_t = void*;
 type dispatch_queue_t = void*;
@@ -3528,21 +3693,6 @@ struct CGSize {
 struct CGRect {
     CGPoint origin;
     CGSize size;
-}
-
-struct NSPoint {
-    CGFloat x;
-    CGFloat y;
-}
-
-struct NSSize {
-    CGFloat width;
-    CGFloat height;
-}
-
-struct NSRect {
-    NSPoint origin;
-    NSSize size;
 }
 
 struct NSRange {
@@ -3609,17 +3759,17 @@ struct ThirteenMTLOrigin {
 }
 
 struct ThirteenPlatform {
-    id app;
-    id window;
-    id contentView;
+    ObjcId app;
+    ObjcId window;
+    ObjcId contentView;
 }
 
 // --- Metal Renderer ---
 struct ThirteenRenderer {
-    id device;
-    id commandQueue;
-    id metalLayer;
-    id uploadBuffer;
+    ObjcId device;
+    ObjcId commandQueue;
+    ObjcId metalLayer;
+    ObjcId uploadBuffer;
     ThirteenNativeWindowHandle hostView;
     thirteen_uint32 bufferWidth;
     thirteen_uint32 bufferHeight;
@@ -3628,59 +3778,55 @@ struct ThirteenRenderer {
 
 private {
 NSRect NSMakeRect(CGFloat x, CGFloat y, CGFloat w, CGFloat h) {
-    NSRect r;
+    noinit NSRect r;
     r.origin.x = x;
     r.origin.y = y;
     r.size.width = w;
     r.size.height = h;
     return r;
 }
-}
-private {
 NSPoint NSMakePoint(CGFloat x, CGFloat y) {
-    NSPoint p;
+    noinit NSPoint p;
     p.x = x;
     p.y = y;
     return p;
 }
-}
-private {
 NSSize NSMakeSize(CGFloat w, CGFloat h) {
-    NSSize s;
+    noinit NSSize s;
     s.width = w;
     s.height = h;
     return s;
 }
+CGRect CGRectMake(CGFloat x, CGFloat y, CGFloat w, CGFloat h) {
+    noinit CGRect r;
+    r.origin.x = x;
+    r.origin.y = y;
+    r.size.width = w;
+    r.size.height = h;
+    return r;
 }
-private {
 NSRange NSMakeRange(NSUInteger location, NSUInteger length) {
-    NSRange r;
+    noinit NSRange r;
     r.location = location;
     r.length = length;
     return r;
 }
-}
-private {
 MTLOrigin MTLOriginMake(NSUInteger x, NSUInteger y, NSUInteger z) {
-    MTLOrigin o;
+    noinit MTLOrigin o;
     o.x = x;
     o.y = y;
     o.z = z;
     return o;
 }
-}
-private {
 MTLSize MTLSizeMake(NSUInteger w, NSUInteger h, NSUInteger d) {
-    MTLSize s;
+    noinit MTLSize s;
     s.width = w;
     s.height = h;
     s.depth = d;
     return s;
 }
-}
-private {
 MTLRegion MTLRegionMake2D(NSUInteger x, NSUInteger y, NSUInteger w, NSUInteger h) {
-    MTLRegion r;
+    noinit MTLRegion r;
     r.origin.x = x;
     r.origin.y = y;
     r.origin.z = 0;
@@ -3689,10 +3835,8 @@ MTLRegion MTLRegionMake2D(NSUInteger x, NSUInteger y, NSUInteger w, NSUInteger h
     r.size.depth = 1;
     return r;
 }
-}
-private {
 MTLRegion MTLRegionMake3D(NSUInteger x, NSUInteger y, NSUInteger z, NSUInteger w, NSUInteger h, NSUInteger d) {
-    MTLRegion r;
+    noinit MTLRegion r;
     r.origin.x = x;
     r.origin.y = y;
     r.origin.z = z;
@@ -3701,10 +3845,8 @@ MTLRegion MTLRegionMake3D(NSUInteger x, NSUInteger y, NSUInteger z, NSUInteger w
     r.size.depth = d;
     return r;
 }
-}
-private {
 MTLClearColor MTLClearColorMake(f64 red, f64 green, f64 blue, f64 alpha) {
-    MTLClearColor c;
+    noinit MTLClearColor c;
     c.red = red;
     c.green = green;
     c.blue = blue;
@@ -3751,241 +3893,221 @@ private {
 SEL thirteen_sel(u8* name) {
     return sel_registerName(name);
 }
-}
-private {
 bool thirteen_platform_init_window(ThirteenPlatform* p, thirteen_uint32 width, thirteen_uint32 height) {
-    id nsApplicationClass;
-    id nsWindowClass;
-    id windowAlloc;
+    ObjcId nsApplicationClass;
+    ObjcId nsWindowClass;
+    ObjcId windowAlloc;
     ThirteenNSUInteger styleMask;
     ThirteenNSUInteger backingStoreBuffered;
-    CGRect frame;
-    nsApplicationClass = cast(id, objc_getClass("NSApplication"));
-    p.app = cast(fn(id, SEL): id, objc_msgSend)(nsApplicationClass, thirteen_sel("sharedApplication"));
+    noinit CGRect frame;
+    nsApplicationClass = cast(ObjcId, objc_getClass("NSApplication"));
+    p.app = cast(fn(ObjcId, SEL): ObjcId, objc_msgSend)(nsApplicationClass, thirteen_sel("sharedApplication"));
     if p.app == null {
         return false;
     }
-    cast(fn(id, SEL, ThirteenNSInteger): void, objc_msgSend)(p.app, thirteen_sel("setActivationPolicy:"), 0);
-    nsWindowClass = cast(id, objc_getClass("NSWindow"));
-    windowAlloc = cast(fn(id, SEL): id, objc_msgSend)(nsWindowClass, thirteen_sel("alloc"));
+    cast(fn(ObjcId, SEL, ThirteenNSInteger): void, objc_msgSend)(p.app, thirteen_sel("setActivationPolicy:"), 0);
+    nsWindowClass = cast(ObjcId, objc_getClass("NSWindow"));
+    windowAlloc = cast(fn(ObjcId, SEL): ObjcId, objc_msgSend)(nsWindowClass, thirteen_sel("alloc"));
     if windowAlloc == null {
         return false;
     }
     styleMask = cast(u64, 1 << 0 | 1 << 1 | 1 << 2);
     backingStoreBuffered = 2;
     frame = CGRectMake(100.0, 100.0, cast(f64, width), cast(f64, height));
-    p.window = cast(fn(id, SEL, CGRect, ThirteenNSUInteger, ThirteenNSUInteger, bool): id, objc_msgSend)(windowAlloc, thirteen_sel("initWithContentRect:styleMask:backing:defer:"), frame, styleMask, backingStoreBuffered, false);
+    p.window = cast(fn(ObjcId, SEL, CGRect, ThirteenNSUInteger, ThirteenNSUInteger, bool): ObjcId, objc_msgSend)(windowAlloc, thirteen_sel("initWithContentRect:styleMask:backing:defer:"), frame, styleMask, backingStoreBuffered, false);
     if p.window == null {
         return false;
     }
-    cast(fn(id, SEL, bool): void, objc_msgSend)(p.window, thirteen_sel("setReleasedWhenClosed:"), false);
-    p.contentView = cast(fn(id, SEL): id, objc_msgSend)(p.window, thirteen_sel("contentView"));
+    cast(fn(ObjcId, SEL, bool): void, objc_msgSend)(p.window, thirteen_sel("setReleasedWhenClosed:"), false);
+    p.contentView = cast(fn(ObjcId, SEL): ObjcId, objc_msgSend)(p.window, thirteen_sel("contentView"));
     if p.contentView == null {
         return false;
     }
-    cast(fn(id, SEL, id): void, objc_msgSend)(p.window, thirteen_sel("makeKeyAndOrderFront:"), cast(id, null));
-    cast(fn(id, SEL, bool): void, objc_msgSend)(p.app, thirteen_sel("activateIgnoringOtherApps:"), true);
+    cast(fn(ObjcId, SEL, ObjcId): void, objc_msgSend)(p.window, thirteen_sel("makeKeyAndOrderFront:"), cast(ObjcId, null));
+    cast(fn(ObjcId, SEL, bool): void, objc_msgSend)(p.app, thirteen_sel("activateIgnoringOtherApps:"), true);
     return true;
 }
-}
-private {
 void thirteen_platform_pump_messages(ThirteenPlatform* p) {
-    id dateClass;
-    id distantPast;
-    id nsStringClass;
-    id defaultMode;
+    ObjcId dateClass;
+    ObjcId distantPast;
+    ObjcId nsStringClass;
+    ObjcId defaultMode;
     u64 anyMask;
     if p.app == null {
         return;
     }
-    dateClass = cast(id, objc_getClass("NSDate"));
-    distantPast = cast(fn(id, SEL): id, objc_msgSend)(dateClass, thirteen_sel("distantPast"));
-    nsStringClass = cast(id, objc_getClass("NSString"));
-    defaultMode = cast(fn(id, SEL, u8*): id, objc_msgSend)(nsStringClass, thirteen_sel("stringWithUTF8String:"), "kCFRunLoopDefaultMode");
+    dateClass = cast(ObjcId, objc_getClass("NSDate"));
+    distantPast = cast(fn(ObjcId, SEL): ObjcId, objc_msgSend)(dateClass, thirteen_sel("distantPast"));
+    nsStringClass = cast(ObjcId, objc_getClass("NSString"));
+    defaultMode = cast(fn(ObjcId, SEL, u8*): ObjcId, objc_msgSend)(nsStringClass, thirteen_sel("stringWithUTF8String:"), "kCFRunLoopDefaultMode");
     anyMask = cast(u64, ~0);
     while true {
         ThirteenNSInteger eventType;
         bool isMouseDownEvent;
         bool isMouseUpEvent;
         bool isMousePositionEvent;
-        id event = cast(fn(id, SEL, u64, id, id, bool): id, objc_msgSend)(p.app, thirteen_sel("nextEventMatchingMask:untilDate:inMode:dequeue:"), anyMask, distantPast, defaultMode, true);
+        ObjcId event = cast(fn(ObjcId, SEL, u64, ObjcId, ObjcId, bool): ObjcId, objc_msgSend)(p.app, thirteen_sel("nextEventMatchingMask:untilDate:inMode:dequeue:"), anyMask, distantPast, defaultMode, true);
         if event == null {
             break;
         }
-        eventType = cast(fn(id, SEL): ThirteenNSInteger, objc_msgSend)(event, thirteen_sel("type"));
+        eventType = cast(fn(ObjcId, SEL): ThirteenNSInteger, objc_msgSend)(event, thirteen_sel("type"));
         isMouseDownEvent = eventType == 1 || eventType == 3 || eventType == 25;
         isMouseUpEvent = eventType == 2 || eventType == 4 || eventType == 26;
         isMousePositionEvent = eventType == 5 || eventType == 6 || eventType == 7 || eventType == 27 || isMouseDownEvent || isMouseUpEvent;
         if eventType == 10 {
-            id chars = cast(fn(id, SEL): id, objc_msgSend)(event, thirteen_sel("charactersIgnoringModifiers"));
+            ObjcId chars = cast(fn(ObjcId, SEL): ObjcId, objc_msgSend)(event, thirteen_sel("charactersIgnoringModifiers"));
             if chars != null {
-                u8* utf8 = cast(fn(id, SEL): u8*, objc_msgSend)(chars, thirteen_sel("UTF8String"));
+                u8* utf8 = cast(fn(ObjcId, SEL): u8*, objc_msgSend)(chars, thirteen_sel("UTF8String"));
                 if utf8 && utf8[0] != 0 {
                     thirteen_keys[cast(u8, utf8[0])] = true;
                 }
             }
         } else if eventType == 11 {
-            id chars = cast(fn(id, SEL): id, objc_msgSend)(event, thirteen_sel("charactersIgnoringModifiers"));
+            ObjcId chars = cast(fn(ObjcId, SEL): ObjcId, objc_msgSend)(event, thirteen_sel("charactersIgnoringModifiers"));
             if chars != null {
-                u8* utf8 = cast(fn(id, SEL): u8*, objc_msgSend)(chars, thirteen_sel("UTF8String"));
+                u8* utf8 = cast(fn(ObjcId, SEL): u8*, objc_msgSend)(chars, thirteen_sel("UTF8String"));
                 if utf8 && utf8[0] != 0 {
                     thirteen_keys[cast(u8, utf8[0])] = false;
                 }
             }
         } else if isMouseDownEvent != 0 {
-            ThirteenNSInteger buttonNumber = cast(fn(id, SEL): ThirteenNSInteger, objc_msgSend)(event, thirteen_sel("buttonNumber"));
+            ThirteenNSInteger buttonNumber = cast(fn(ObjcId, SEL): ThirteenNSInteger, objc_msgSend)(event, thirteen_sel("buttonNumber"));
             if buttonNumber >= 0 && buttonNumber < 3 {
                 thirteen_mouse_buttons[buttonNumber] = true;
             }
         } else if isMouseUpEvent != 0 {
-            ThirteenNSInteger buttonNumber = cast(fn(id, SEL): ThirteenNSInteger, objc_msgSend)(event, thirteen_sel("buttonNumber"));
+            ThirteenNSInteger buttonNumber = cast(fn(ObjcId, SEL): ThirteenNSInteger, objc_msgSend)(event, thirteen_sel("buttonNumber"));
             if buttonNumber >= 0 && buttonNumber < 3 {
                 thirteen_mouse_buttons[buttonNumber] = false;
             }
         }
         if isMousePositionEvent != 0 {
-            CGPoint pt = cast(fn(id, SEL): CGPoint, objc_msgSend)(event, thirteen_sel("locationInWindow"));
+            CGPoint pt = cast(fn(ObjcId, SEL): CGPoint, objc_msgSend)(event, thirteen_sel("locationInWindow"));
             thirteen_mouse_x = cast(i32, pt.x);
             thirteen_mouse_y = cast(i32, thirteen_height - pt.y);
         }
         if eventType != 10 && eventType != 11 {
-            cast(fn(id, SEL, id): void, objc_msgSend)(p.app, thirteen_sel("sendEvent:"), event);
+            cast(fn(ObjcId, SEL, ObjcId): void, objc_msgSend)(p.app, thirteen_sel("sendEvent:"), event);
         }
     }
     if p.window != null {
-        bool visible = cast(fn(id, SEL): bool, objc_msgSend)(p.window, thirteen_sel("isVisible")) != 0;
+        bool visible = cast(fn(ObjcId, SEL): bool, objc_msgSend)(p.window, thirteen_sel("isVisible")) != 0;
         if visible == 0 {
             thirteen_should_quit = true;
         }
     }
 }
-}
-private {
 void thirteen_platform_set_title(ThirteenPlatform* p, u8* title) {
-    id nsStringClass;
-    id nsTitle;
+    ObjcId nsStringClass;
+    ObjcId nsTitle;
     if p.window == null {
         return;
     }
-    nsStringClass = cast(id, objc_getClass("NSString"));
-    nsTitle = cast(fn(id, SEL, u8*): id, objc_msgSend)(nsStringClass, thirteen_sel("stringWithUTF8String:"), title);
-    cast(fn(id, SEL, id): void, objc_msgSend)(p.window, thirteen_sel("setTitle:"), nsTitle);
+    nsStringClass = cast(ObjcId, objc_getClass("NSString"));
+    nsTitle = cast(fn(ObjcId, SEL, u8*): ObjcId, objc_msgSend)(nsStringClass, thirteen_sel("stringWithUTF8String:"), title);
+    cast(fn(ObjcId, SEL, ObjcId): void, objc_msgSend)(p.window, thirteen_sel("setTitle:"), nsTitle);
 }
-}
-private {
 void thirteen_platform_set_fullscreen(ThirteenPlatform* p, bool fullscreen, thirteen_uint32 width, thirteen_uint32 height) {
     ignore fullscreen;
     ignore width;
     ignore height;
     if p.window != null {
-        cast(fn(id, SEL, id): void, objc_msgSend)(p.window, thirteen_sel("toggleFullScreen:"), cast(id, null));
+        cast(fn(ObjcId, SEL, ObjcId): void, objc_msgSend)(p.window, thirteen_sel("toggleFullScreen:"), cast(ObjcId, null));
     }
 }
-}
-private {
 void thirteen_platform_resize_window(ThirteenPlatform* p, thirteen_uint32 width, thirteen_uint32 height, bool isFullscreen) {
-    CGSize contentSize;
+    noinit CGSize contentSize;
     if !p.window || isFullscreen {
         return;
     }
     contentSize = CGSizeMake(cast(f64, width), cast(f64, height));
-    cast(fn(id, SEL, CGSize): void, objc_msgSend)(p.window, thirteen_sel("setContentSize:"), contentSize);
+    cast(fn(ObjcId, SEL, CGSize): void, objc_msgSend)(p.window, thirteen_sel("setContentSize:"), contentSize);
 }
-}
-private {
 ThirteenNativeWindowHandle thirteen_platform_get_window_handle(ThirteenPlatform* p) {
     return p.contentView;
 }
-}
-private {
 void thirteen_platform_shutdown_window(ThirteenPlatform* p) {
     if p.window != null {
-        cast(fn(id, SEL): void, objc_msgSend)(p.window, thirteen_sel("close"));
+        cast(fn(ObjcId, SEL): void, objc_msgSend)(p.window, thirteen_sel("close"));
         p.window = null;
     }
     p.contentView = null;
     p.app = null;
 }
-}
-private {
 bool thirteen_renderer_ensure_upload_buffer(ThirteenRenderer* r, thirteen_uint32 width, thirteen_uint32 height) {
     u64 requiredSize = cast(u64, width) * cast(u64, height) * 4;
     if r.uploadBuffer && requiredSize == r.uploadSize {
         return true;
     }
     if r.uploadBuffer != null {
-        cast(fn(id, SEL): void, objc_msgSend)(r.uploadBuffer, thirteen_sel("release"));
+        cast(fn(ObjcId, SEL): void, objc_msgSend)(r.uploadBuffer, thirteen_sel("release"));
         r.uploadBuffer = null;
     }
-    r.uploadBuffer = cast(fn(id, SEL, ThirteenNSUInteger, ThirteenNSUInteger): id, objc_msgSend)(r.device, thirteen_sel("newBufferWithLength:options:"), cast(ThirteenNSUInteger, requiredSize), cast(ThirteenNSUInteger, 0));
+    r.uploadBuffer = cast(fn(ObjcId, SEL, ThirteenNSUInteger, ThirteenNSUInteger): ObjcId, objc_msgSend)(r.device, thirteen_sel("newBufferWithLength:options:"), cast(ThirteenNSUInteger, requiredSize), cast(ThirteenNSUInteger, 0));
     if r.uploadBuffer == null {
         return false;
     }
     r.uploadSize = requiredSize;
     return true;
 }
-}
-private {
 bool thirteen_renderer_init(ThirteenRenderer* r, ThirteenPlatform* p, thirteen_uint32 width, thirteen_uint32 height) {
-    id layerClass;
-    CGRect layerFrame;
+    ObjcId layerClass;
+    noinit CGRect layerFrame;
     r.hostView = thirteen_platform_get_window_handle(p);
-    r.device = cast(id, MTLCreateSystemDefaultDevice());
+    r.device = cast(ObjcId, MTLCreateSystemDefaultDevice());
     if r.device == null {
         return false;
     }
-    r.commandQueue = cast(fn(id, SEL): id, objc_msgSend)(r.device, thirteen_sel("newCommandQueue"));
+    r.commandQueue = cast(fn(ObjcId, SEL): ObjcId, objc_msgSend)(r.device, thirteen_sel("newCommandQueue"));
     if r.commandQueue == null {
         return false;
     }
-    layerClass = cast(id, objc_getClass("CAMetalLayer"));
-    r.metalLayer = cast(fn(id, SEL): id, objc_msgSend)(layerClass, thirteen_sel("layer"));
+    layerClass = cast(ObjcId, objc_getClass("CAMetalLayer"));
+    r.metalLayer = cast(fn(ObjcId, SEL): ObjcId, objc_msgSend)(layerClass, thirteen_sel("layer"));
     if r.metalLayer == null {
         return false;
     }
-    cast(fn(id, SEL, id): void, objc_msgSend)(r.metalLayer, thirteen_sel("setDevice:"), r.device);
-    cast(fn(id, SEL, ThirteenNSUInteger): void, objc_msgSend)(r.metalLayer, thirteen_sel("setPixelFormat:"), cast(ThirteenNSUInteger, 70));
-    cast(fn(id, SEL, bool): void, objc_msgSend)(r.metalLayer, thirteen_sel("setFramebufferOnly:"), false);
+    cast(fn(ObjcId, SEL, ObjcId): void, objc_msgSend)(r.metalLayer, thirteen_sel("setDevice:"), r.device);
+    cast(fn(ObjcId, SEL, ThirteenNSUInteger): void, objc_msgSend)(r.metalLayer, thirteen_sel("setPixelFormat:"), cast(ThirteenNSUInteger, 70));
+    cast(fn(ObjcId, SEL, bool): void, objc_msgSend)(r.metalLayer, thirteen_sel("setFramebufferOnly:"), false);
     layerFrame = CGRectMake(0.0, 0.0, cast(f64, width), cast(f64, height));
-    cast(fn(id, SEL, CGRect): void, objc_msgSend)(r.metalLayer, thirteen_sel("setFrame:"), layerFrame);
+    cast(fn(ObjcId, SEL, CGRect): void, objc_msgSend)(r.metalLayer, thirteen_sel("setFrame:"), layerFrame);
     if r.hostView != null {
-        var view = cast(id, r.hostView);
-        cast(fn(id, SEL, bool): void, objc_msgSend)(view, thirteen_sel("setWantsLayer:"), true);
-        cast(fn(id, SEL, id): void, objc_msgSend)(view, thirteen_sel("setLayer:"), r.metalLayer);
+        var view = cast(ObjcId, r.hostView);
+        cast(fn(ObjcId, SEL, bool): void, objc_msgSend)(view, thirteen_sel("setWantsLayer:"), true);
+        cast(fn(ObjcId, SEL, ObjcId): void, objc_msgSend)(view, thirteen_sel("setLayer:"), r.metalLayer);
     }
     r.bufferWidth = width;
     r.bufferHeight = height;
     return thirteen_renderer_ensure_upload_buffer(r, width, height);
 }
-}
-private {
 bool thirteen_renderer_render(ThirteenRenderer* r, thirteen_uint8* pixels, thirteen_uint32 width, thirteen_uint32 height, bool vsync) {
-    id drawable;
-    id texture;
-    id commandBuffer;
-    id blit;
+    ObjcId drawable;
+    ObjcId texture;
+    ObjcId commandBuffer;
+    ObjcId blit;
     void* mapped;
-    ThirteenMTLSize sourceSize;
-    ThirteenMTLOrigin destOrigin;
+    noinit ThirteenMTLSize sourceSize;
+    noinit ThirteenMTLOrigin destOrigin;
     ignore vsync;
     if !r.metalLayer || !r.commandQueue || !thirteen_renderer_ensure_upload_buffer(r, width, height) {
         return false;
     }
-    drawable = cast(fn(id, SEL): id, objc_msgSend)(r.metalLayer, thirteen_sel("nextDrawable"));
+    drawable = cast(fn(ObjcId, SEL): ObjcId, objc_msgSend)(r.metalLayer, thirteen_sel("nextDrawable"));
     if drawable == null {
         return true;
     }
-    mapped = cast(fn(id, SEL): void*, objc_msgSend)(r.uploadBuffer, thirteen_sel("contents"));
+    mapped = cast(fn(ObjcId, SEL): void*, objc_msgSend)(r.uploadBuffer, thirteen_sel("contents"));
     if mapped == null {
         return false;
     }
     memcpy(mapped, pixels, cast(u64, width) * cast(u64, height) * 4);
-    texture = cast(fn(id, SEL): id, objc_msgSend)(drawable, thirteen_sel("texture"));
-    commandBuffer = cast(fn(id, SEL): id, objc_msgSend)(r.commandQueue, thirteen_sel("commandBuffer"));
+    texture = cast(fn(ObjcId, SEL): ObjcId, objc_msgSend)(drawable, thirteen_sel("texture"));
+    commandBuffer = cast(fn(ObjcId, SEL): ObjcId, objc_msgSend)(r.commandQueue, thirteen_sel("commandBuffer"));
     if !texture || !commandBuffer {
         return false;
     }
-    blit = cast(fn(id, SEL): id, objc_msgSend)(commandBuffer, thirteen_sel("blitCommandEncoder"));
+    blit = cast(fn(ObjcId, SEL): ObjcId, objc_msgSend)(commandBuffer, thirteen_sel("blitCommandEncoder"));
     if blit == null {
         return false;
     }
@@ -3995,32 +4117,28 @@ bool thirteen_renderer_render(ThirteenRenderer* r, thirteen_uint8* pixels, thirt
     destOrigin.x = 0;
     destOrigin.y = 0;
     destOrigin.z = 0;
-    cast(fn(id, SEL, id, ThirteenNSUInteger, ThirteenNSUInteger, ThirteenNSUInteger, ThirteenMTLSize, id, ThirteenNSUInteger, ThirteenNSUInteger, ThirteenMTLOrigin): void, objc_msgSend)(blit, thirteen_sel("copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:"), r.uploadBuffer, cast(ThirteenNSUInteger, 0), cast(ThirteenNSUInteger, width * 4), cast(ThirteenNSUInteger, width * height * 4), sourceSize, texture, cast(ThirteenNSUInteger, 0), cast(ThirteenNSUInteger, 0), destOrigin);
-    cast(fn(id, SEL): void, objc_msgSend)(blit, thirteen_sel("endEncoding"));
-    cast(fn(id, SEL, id): void, objc_msgSend)(commandBuffer, thirteen_sel("presentDrawable:"), drawable);
-    cast(fn(id, SEL): void, objc_msgSend)(commandBuffer, thirteen_sel("commit"));
+    cast(fn(ObjcId, SEL, ObjcId, ThirteenNSUInteger, ThirteenNSUInteger, ThirteenNSUInteger, ThirteenMTLSize, ObjcId, ThirteenNSUInteger, ThirteenNSUInteger, ThirteenMTLOrigin): void, objc_msgSend)(blit, thirteen_sel("copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:"), r.uploadBuffer, cast(ThirteenNSUInteger, 0), cast(ThirteenNSUInteger, width * 4), cast(ThirteenNSUInteger, width * height * 4), sourceSize, texture, cast(ThirteenNSUInteger, 0), cast(ThirteenNSUInteger, 0), destOrigin);
+    cast(fn(ObjcId, SEL): void, objc_msgSend)(blit, thirteen_sel("endEncoding"));
+    cast(fn(ObjcId, SEL, ObjcId): void, objc_msgSend)(commandBuffer, thirteen_sel("presentDrawable:"), drawable);
+    cast(fn(ObjcId, SEL): void, objc_msgSend)(commandBuffer, thirteen_sel("commit"));
     return true;
 }
-}
-private {
 bool thirteen_renderer_resize(ThirteenRenderer* r, thirteen_uint32 width, thirteen_uint32 height) {
     r.bufferWidth = width;
     r.bufferHeight = height;
     if r.metalLayer != null {
         CGRect layerFrame = CGRectMake(0.0, 0.0, cast(f64, width), cast(f64, height));
-        cast(fn(id, SEL, CGRect): void, objc_msgSend)(r.metalLayer, thirteen_sel("setFrame:"), layerFrame);
+        cast(fn(ObjcId, SEL, CGRect): void, objc_msgSend)(r.metalLayer, thirteen_sel("setFrame:"), layerFrame);
     }
     return thirteen_renderer_ensure_upload_buffer(r, width, height);
 }
-}
-private {
 void thirteen_renderer_shutdown(ThirteenRenderer* r) {
     if r.uploadBuffer != null {
-        cast(fn(id, SEL): void, objc_msgSend)(r.uploadBuffer, thirteen_sel("release"));
+        cast(fn(ObjcId, SEL): void, objc_msgSend)(r.uploadBuffer, thirteen_sel("release"));
         r.uploadBuffer = null;
     }
     if r.commandQueue != null {
-        cast(fn(id, SEL): void, objc_msgSend)(r.commandQueue, thirteen_sel("release"));
+        cast(fn(ObjcId, SEL): void, objc_msgSend)(r.commandQueue, thirteen_sel("release"));
         r.commandQueue = null;
     }
     r.device = null;
@@ -4030,14 +4148,14 @@ void thirteen_renderer_shutdown(ThirteenRenderer* r) {
     r.bufferHeight = 0;
     r.uploadSize = 0;
 }
-}
 // ==========================================================================
 // LINUX BACKEND
 // ==========================================================================
 // ========== Platform/Renderer Pointers ==========
-private { ThirteenPlatform* thirteen_platform_ptr = null; }
-private { ThirteenRenderer* thirteen_renderer_ptr = null; }
+ThirteenPlatform* thirteen_platform_ptr = null;
+ThirteenRenderer* thirteen_renderer_ptr = null;
 // ========== Public API ==========
+}
 thirteen_uint8* thirteen_init(thirteen_uint32 width, thirteen_uint32 height, bool fullscreen) {
     thirteen_width = width;
     thirteen_height = height;
@@ -4073,10 +4191,11 @@ thirteen_uint8* thirteen_init(thirteen_uint32 width, thirteen_uint32 height, boo
     }
     return thirteen_pixels_buf;
 }
-
+private {
+}
 bool thirteen_render() {
     f64 currentTime;
-    u8[256] titleBuffer;
+    noinit u8[256] titleBuffer;
     thirteen_prev_mouse_x = thirteen_mouse_x;
     thirteen_prev_mouse_y = thirteen_mouse_y;
     memcpy(thirteen_prev_mouse_buttons, thirteen_mouse_buttons, cast(u64, sizeof(thirteen_mouse_buttons)));
@@ -4111,19 +4230,23 @@ bool thirteen_render() {
     thirteen_renderer_render(thirteen_renderer_ptr, thirteen_pixels_buf, thirteen_width, thirteen_height, thirteen_vsync_enabled);
     return !thirteen_should_quit;
 }
-
+private {
+}
 void thirteen_set_vsync(bool enabled) {
     thirteen_vsync_enabled = enabled;
 }
-
+private {
+}
 bool thirteen_get_vsync() {
     return thirteen_vsync_enabled;
 }
-
+private {
+}
 void thirteen_set_application_name(u8* name) {
     _thirteen_strcpy(thirteen_app_name, sizeof(thirteen_app_name), name);
 }
-
+private {
+}
 void thirteen_set_fullscreen(bool fullscreen) {
     if thirteen_is_fullscreen == fullscreen {
         return;
@@ -4133,23 +4256,28 @@ void thirteen_set_fullscreen(bool fullscreen) {
         thirteen_platform_set_fullscreen(thirteen_platform_ptr, fullscreen, thirteen_width, thirteen_height);
     }
 }
-
+private {
+}
 bool thirteen_get_fullscreen() {
     return thirteen_is_fullscreen;
 }
-
+private {
+}
 thirteen_uint32 thirteen_get_width() {
     return thirteen_width;
 }
-
+private {
+}
 thirteen_uint32 thirteen_get_height() {
     return thirteen_height;
 }
-
+private {
+}
 ThirteenNativeWindowHandle thirteen_get_window_handle() {
     return thirteen_platform_get_window_handle(thirteen_platform_ptr);
 }
-
+private {
+}
 thirteen_uint8* thirteen_set_size(thirteen_uint32 width, thirteen_uint32 height) {
     thirteen_uint8* reallocResult;
     if width == thirteen_width && height == thirteen_height {
@@ -4170,49 +4298,57 @@ thirteen_uint8* thirteen_set_size(thirteen_uint32 width, thirteen_uint32 height)
     }
     return thirteen_pixels_buf;
 }
-
+private {
+}
 f64 thirteen_get_delta_time() {
     return thirteen_last_delta_time;
 }
-
+private {
+}
 void thirteen_get_mouse_position(i32* x, i32* y) {
     *x = thirteen_mouse_x;
     *y = thirteen_mouse_y;
 }
-
+private {
+}
 void thirteen_get_mouse_position_last_frame(i32* x, i32* y) {
     *x = thirteen_prev_mouse_x;
     *y = thirteen_prev_mouse_y;
 }
-
+private {
+}
 bool thirteen_get_mouse_button(i32 button) {
     if button >= 0 && button < 3 {
         return thirteen_mouse_buttons[button];
     }
     return false;
 }
-
+private {
+}
 bool thirteen_get_mouse_button_last_frame(i32 button) {
     if button >= 0 && button < 3 {
         return thirteen_prev_mouse_buttons[button];
     }
     return false;
 }
-
+private {
+}
 bool thirteen_get_key(i32 keyCode) {
     if keyCode >= 0 && keyCode < 256 {
         return thirteen_keys[keyCode];
     }
     return false;
 }
-
+private {
+}
 bool thirteen_get_key_last_frame(i32 keyCode) {
     if keyCode >= 0 && keyCode < 256 {
         return thirteen_prev_keys[keyCode];
     }
     return false;
 }
-
+private {
+}
 void thirteen_shutdown() {
     if thirteen_renderer_ptr != null {
         thirteen_renderer_shutdown(thirteen_renderer_ptr);
@@ -4227,7 +4363,8 @@ void thirteen_shutdown() {
     free(thirteen_pixels_buf);
     thirteen_pixels_buf = null;
 }
-
+private {
+}
 
 }
 

@@ -14,7 +14,7 @@ Windows:
 ```powershell
 git clone https://github.com/<your-org>/thirteen-minc
 cd thirteen-minc
-./tools/get_minc.ps1        # one-time: fetch minc compiler (~1.7 MB)
+powershell -c "irm minc.dev/install.ps1 | iex"   # install minc (see install_minc.md)
 ./build.ps1 examples/simple # builds + runs the Simple example
 ```
 
@@ -22,7 +22,7 @@ macOS/Linux:
 ```sh
 git clone https://github.com/<your-org>/thirteen-minc
 cd thirteen-minc
-./tools/get_minc.sh
+curl -fsSL https://minc.dev/install | bash
 ./build.sh examples/simple
 ```
 
@@ -104,8 +104,9 @@ per-example HTML to maintain. Add `-NoRun` (PowerShell) or `--no-run`
 
 ### Troubleshooting
 
-- **`minc compiler not found`** — run `./tools/get_minc.{ps1,sh}` or
-  put `minc(.exe)` on PATH.
+- **`minc compiler not found`** — install minc (see
+  `install_minc.md`), set `$MINC` / `MINC`, or put
+  `minc(.exe)` on PATH.
 - **`thirteen_init returned null`** — usually a GPU adapter / X
   display / Metal device problem. Check the target's driver setup.
 - **wasm: nothing draws** — the canvas needs the same dimensions as
@@ -149,10 +150,11 @@ not ported.)
 
 ## Prerequisites
 
-**minc compiler** — `./tools/get_minc.{ps1,sh}` fetches a pinned
-release from <https://github.com/SpacesOfPlay/minc-dev/releases>
-(SHA-256 verified, dropped at `tools/minc/`). Or install manually
-and put on PATH.
+**minc compiler** — the one-liner in
+[`install_minc.md`](install_minc.md) installs the toolchain from
+<https://minc.dev>. The
+build scripts resolve minc from `$MINC`, then PATH, then next to the
+script.
 
 **`minc` is closed-source proprietary software, NOT covered by this
 repo's license.** See [`LICENSE.md`](LICENSE.md).
