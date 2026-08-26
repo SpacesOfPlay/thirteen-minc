@@ -281,6 +281,11 @@ i32 VK_F9  = 0x78; i32 VK_F10 = 0x79; i32 VK_F11 = 0x7A; i32 VK_F12 = 0x7B;
 // Gated so the windows/linux/wasm targets don't pull it in.
 when os(macos) {
     import objc_runtime;
+    // The Cocoa/Metal backend reaches AppKit and QuartzCore only through
+    // objc_getClass, so no extern keeps them linked; without these tags
+    // dyld never loads them and objc_getClass("NSApplication") is null.
+    @link "AppKit"
+    @link "QuartzCore"
 }
 
 // ----------------------------------------------------------------------------
@@ -2487,6 +2492,7 @@ private {
 fn(Display*, Window, i32, i32): i32 _t13_XMoveWindow = null;
 fn(Display*, Window, Window*, Window*, i32*, i32*, i32*, i32*, u32*): i32 _t13_XQueryPointer = null;
 fn(Display*, Window, Atom, Atom, i32, i32, u8*, i32): i32 _t13_XChangeProperty = null;
+fn(Display*, u8*, Bool): Atom _t13_XInternAtom = null;
 fn(Display*, Window, i32*, i32*, Window*): i32 _t13_XTranslateCoordinates = null;
 fn(Display*, i32): i32 _t13_XDisplayWidth = null;
 fn(Display*, i32): i32 _t13_XDisplayHeight = null;
@@ -2514,6 +2520,8 @@ bool _t13_x11_load() {
                               dlsym(lib, "XQueryPointer"));
     _t13_XChangeProperty = cast(fn(Display*, Window, Atom, Atom, i32, i32, u8*, i32): i32,
                                 dlsym(lib, "XChangeProperty"));
+    _t13_XInternAtom = cast(fn(Display*, u8*, Bool): Atom,
+                            dlsym(lib, "XInternAtom"));
     _t13_XTranslateCoordinates = cast(fn(Display*, Window, i32*, i32*, Window*): i32,
                                       dlsym(lib, "XTranslateCoordinates"));
     _t13_XDisplayWidth = cast(fn(Display*, i32): i32, dlsym(lib, "XDisplayWidth"));
@@ -2573,9 +2581,9 @@ void thirteen_set_window_position(i32 x, i32 y) {
 void thirteen_set_decorated(bool decorated) {
     if thirteen_decorated == decorated { return; }
     thirteen_decorated = decorated;
-    if !_t13_x11_load() || _t13_XChangeProperty == null { return; }
+    if !_t13_x11_load() || _t13_XChangeProperty == null || _t13_XInternAtom == null { return; }
     ThirteenPlatform* p = thirteen_platform_ptr;
-    Atom hints_atom = XInternAtom(p.x11Display, "_MOTIF_WM_HINTS", False);
+    Atom hints_atom = _t13_XInternAtom(p.x11Display, "_MOTIF_WM_HINTS", False);
     if hints_atom == 0 { return; }
     noinit _T13MotifHints hints;
     hints.flags = 2;
