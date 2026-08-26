@@ -15,7 +15,7 @@ Windows:
 git clone https://github.com/<your-org>/thirteen-minc
 cd thirteen-minc
 powershell -c "irm minc.dev/install.ps1 | iex"   # install minc (see install_minc.md)
-./build.ps1 examples/simple # builds + runs the Simple example
+minc run                    # builds + runs the Simple example
 ```
 
 macOS/Linux:
@@ -23,7 +23,7 @@ macOS/Linux:
 git clone https://github.com/<your-org>/thirteen-minc
 cd thirteen-minc
 curl -fsSL https://minc.dev/install | bash
-./build.sh examples/simple
+minc run
 ```
 
 ## Hello world
@@ -54,7 +54,7 @@ i32 main() {
 }
 ```
 
-Drop into `examples/hello.mc`, then `./build.ps1 examples/hello`.
+Drop into `examples/hello.mc`, then `minc run examples/hello`.
 
 ## Platforms
 
@@ -67,29 +67,28 @@ Drop into `examples/hello.mc`, then `./build.ps1 examples/hello`.
 
 ## Building
 
-First positional arg is either a target (`native` / `windows` / `linux`
-/ `macos` / `wasm`) or the source. If a target, the next arg is the
-source. Apart from that, PowerShell and bash behave the same.
+The same commands work on every platform. Examples can be named
+without the `.mc` extension; an OS word (`windows` / `linux` /
+`macos`) before the source cross-compiles for that platform instead
+of building for the host.
 
-```powershell
-./build.ps1 examples/simple             # native (host OS) build + run
-./build.ps1 wasm examples/simple        # wasm build + serve + open browser
-./build.ps1 linux examples/simple       # cross-compile (object only)
-./build.ps1 macos examples/simple
+```
+minc run examples/simple             # native (host OS) build + run
+minc wasm examples/simple            # wasm build + serve + open browser
+minc build examples/simple           # compile only
+minc build linux examples/simple     # cross-compile
+minc build macos examples/simple
+minc clean                           # remove build/
 ```
 
-```sh
-./build.sh examples/simple              # native
-./build.sh wasm examples/simple         # wasm
-```
-
-The build script runs `minc` from the dist root so `import thirteen;`
-resolves, drops the binary in `build/<example>/`, and runs it.
+The build (`build.mc`, run by the minc verbs above) compiles from the
+dist root so `import thirteen;` resolves, drops the binary in
+`build/<example>/`, and runs it with that directory as cwd.
 
 ### Web (wasm)
 
-```powershell
-./build.ps1 wasm examples/simple
+```
+minc wasm examples/simple
 ```
 
 Compiles to `build/simple/main.wasm`, stages `lib/thirteen.js` and a
@@ -99,8 +98,8 @@ and opens the browser. Ctrl+C in the terminal stops the server.
 The staging is driven by `@wasm_host "thirteen.js"` in `lib/thirteen.mc`
 — minc walks the import graph, finds the annotation, copies the host
 file into the build directory, and generates the shell page. No
-per-example HTML to maintain. Add `-NoRun` (PowerShell) or `--no-run`
-(bash) to skip the browser-open (useful for CI / headless smoke).
+per-example HTML to maintain. Add `--no-run` to skip the browser-open
+(useful for CI / headless smoke).
 
 ### Troubleshooting
 
@@ -153,7 +152,7 @@ not ported.)
 **minc compiler** — the one-liner in
 [`install_minc.md`](install_minc.md) installs the toolchain from
 <https://minc.dev>. The
-build scripts resolve minc from `$MINC`, then PATH, then next to the
+build resolves minc from `$MINC`, then PATH, then next to the
 script.
 
 **`minc` is closed-source proprietary software, NOT covered by this

@@ -69,6 +69,57 @@
 //   u32  thirteen_get_width()
 //   u32  thirteen_get_height()
 //   f64  thirteen_get_delta_time()                       // seconds since last render
+//   void thirteen_quit()                                 // ends thirteen_run
+//
+// BORDERLESS + DRAG
+//
+//   void thirteen_set_decorated(bool decorated)
+//     Show or hide the OS title bar and frame. Restyles the live
+//     window and keeps the client size, so call it any time. An
+//     undecorated window has no OS close button or drag handle —
+//     provide your own and call thirteen_quit / the drag calls below.
+//   bool thirteen_get_decorated()
+//
+//   void thirteen_begin_window_drag()
+//     Start dragging the window from the current cursor position.
+//     Call it when the user presses inside your own title bar.
+//     thirteen moves the window from its own pump, so the frame loop
+//     keeps running (audio and animation do not stall the way an OS
+//     modal move loop would). The drag ends when the left button is
+//     released.
+//   bool thirteen_window_dragging()
+//   void thirteen_drag_update()
+//     Advances an active drag. thirteen_run calls this for you; a
+//     hand-written thirteen_render loop must call it once per frame.
+//
+//   void thirteen_get_window_position(i32* x, i32* y)     // screen coords
+//   void thirteen_set_window_position(i32 x, i32 y)
+//   void thirteen_get_screen_size(i32* w, i32* h)
+//   void thirteen_minimize()
+//   void thirteen_set_always_on_top(bool on)
+//   bool thirteen_get_always_on_top()
+//
+//   void thirteen_set_snap(i32 pixels)
+//     While dragging, pull the window flush to a screen edge when it
+//     comes within `pixels` of one. 0 (the default) disables it.
+//
+// FILE DROP
+//
+//   void thirteen_set_file_drop(bool enabled)
+//     Accept files dragged onto the window. Off by default.
+//   i32  thirteen_dropped_count()
+//   u8*  thirteen_dropped_path(i32 index)                // NUL-terminated
+//   void thirteen_clear_dropped()
+//     Poll once per frame; clear when handled, or the same drop is
+//     reported again next frame:
+//
+//         for i32 i = 0; i < thirteen_dropped_count(); i++ {
+//             open(thirteen_dropped_path(i));
+//         }
+//         thirteen_clear_dropped();
+//
+//     Implemented on windows only for now; the other arms accept the
+//     calls and never report a drop.
 //
 // INPUT
 //
@@ -112,10 +163,71 @@
 when os(windows) || os(linux) || os(macos) {
     void thirteen_run(fn(): void on_frame) {
         while thirteen_render() && !thirteen_get_key(VK_ESCAPE) {
+            thirteen_drag_update();
             on_frame();
         }
         thirteen_shutdown();
     }
+}
+
+// Window decoration + drag state, shared by the per-arm
+// implementations further down. Anchors are screen coordinates taken
+// when the drag starts; the window origin moves by the cursor delta.
+bool thirteen_decorated = true;
+bool thirteen_dragging = false;
+i32 thirteen_drag_cursor_x = 0;
+i32 thirteen_drag_cursor_y = 0;
+i32 thirteen_drag_window_x = 0;
+i32 thirteen_drag_window_y = 0;
+
+bool thirteen_get_decorated() { return thirteen_decorated; }
+bool thirteen_window_dragging() { return thirteen_dragging; }
+
+bool thirteen_always_on_top = false;
+bool thirteen_get_always_on_top() { return thirteen_always_on_top; }
+
+// Dropped file paths, filled by whichever arm implements drops.
+const i32 THIRTEEN_MAX_DROPPED = 64;
+const i32 THIRTEEN_DROP_PATH = 520;
+u8[33280] thirteen_dropped_buf;    // MAX_DROPPED * DROP_PATH
+i32 thirteen_dropped_n = 0;
+
+i32 thirteen_dropped_count() { return thirteen_dropped_n; }
+
+u8* thirteen_dropped_path(i32 index) {
+    if index < 0 || index >= thirteen_dropped_n { return null; }
+    return &thirteen_dropped_buf[index * THIRTEEN_DROP_PATH];
+}
+
+void thirteen_clear_dropped() { thirteen_dropped_n = 0; }
+
+// Edge snapping. The per-arm drag runs a proposed origin through
+// this before moving the window.
+i32 thirteen_snap_px = 0;
+
+void thirteen_set_snap(i32 pixels) {
+    if pixels < 0 { pixels = 0; }
+    thirteen_snap_px = pixels;
+}
+
+private {
+i32 thirteen_abs_i32(i32 v) {
+    if v < 0 { return -v; }
+    return v;
+}
+}
+
+void thirteen_apply_snap(i32* x, i32* y, i32 w, i32 h) {
+    if thirteen_snap_px <= 0 { return; }
+    i32 sw = 0;
+    i32 sh = 0;
+    thirteen_get_screen_size(&sw, &sh);
+    if sw <= 0 || sh <= 0 { return; }
+    i32 s = thirteen_snap_px;
+    if thirteen_abs_i32(*x) <= s { *x = 0; }
+    if thirteen_abs_i32(*x + w - sw) <= s { *x = sw - w; }
+    if thirteen_abs_i32(*y) <= s { *y = 0; }
+    if thirteen_abs_i32(*y + h - sh) <= s { *y = sh - h; }
 }
 
 // Mouse button indices.
@@ -172,13 +284,11 @@ when os(macos) {
 }
 
 // ----------------------------------------------------------------------------
-// libc helpers
+// string helpers
 // ----------------------------------------------------------------------------
-// thirteen_libc — libc-shaped helpers the thirteen dist needs.
+// thirteen_libc — string helpers the thirteen dist needs.
 
 import str;
-
-@must_use void* malloc(u64 size) { return alloc(cast(i32, size)); }
 
 // Bounded strcpy.
 void _thirteen_strcpy(u8* dst, u64 cap, u8* src) {
@@ -211,27 +321,6 @@ void _thirteen_fmt_fps_title(u8* dst, u64 cap, u8* app_name, f64 fps, f64 ms) {
     free(s);
 }
 
-// POSIX timespec + clock_gettime stub. Used by the FPS counter on
-// linux/macos. CLOCK_MONOTONIC is the clk_id the macOS + Linux arms
-// pass; the stub ignores it, so the value is immaterial (it's the
-// macOS <time.h> value).
-struct timespec { i64 tv_sec; i64 tv_nsec; }
-i32 CLOCK_MONOTONIC = 6;
-i32 clock_gettime(i32 clk_id, timespec* tp) { return 0; }
-
-// Widen an ASCII string to UTF-16 for the wide-char Win32 entry points.
-u16* __wide_literal(u8* s) {
-    if s == null { return null; }
-    i32 n = 0;
-    while *(s + n) != 0 { n = n + 1; }
-    u16* buf = alloc<u16>(n + 1);
-    for i32 i = 0; i < n; i = i + 1 {
-        *(buf + i) = cast(u16, *(s + i));
-    }
-    *(buf + n) = 0;
-    return buf;
-}
-
 // ----------------------------------------------------------------------------
 // Windows arm (D3D12 + DXGI)
 // ----------------------------------------------------------------------------
@@ -247,7 +336,10 @@ extern "kernel32.dll" u32 GetLastError();
 extern "kernel32.dll" i32 CloseHandle(void* hObject);
 extern "kernel32.dll" void* CreateEventA(void* lpEventAttributes, i32 bManualReset,
                                          i32 bInitialState, u8* lpName);
-extern "kernel32.dll" u32 WaitForSingleObject(void* hHandle, u32 dwMilliseconds);
+// Bound to Win32 WaitForSingleObject under a local name: the minc
+// stdlib (lib/file.mc) declares the same import with an i64 handle,
+// and one program can hold only one signature per import name.
+extern "kernel32.dll" u32 _thirteen_WaitForSingleObject(void* hHandle, u32 dwMilliseconds) from "WaitForSingleObject";
 
 // --- user32: window class + lifecycle ---------------------------------------
 extern "user32.dll" u16 RegisterClassExW(void* arg);
@@ -380,6 +472,9 @@ u32 MONITOR_DEFAULTTONEAREST = cast(u32, 2);
 i32 SM_CXSCREEN = 0;
 i32 SM_CYSCREEN = 1;
 
+// ShowWindow nCmdShow: minimize without activating.
+i32 SW_MINIMIZE = 6;
+
 // HIWORD / LOWORD: extract upper / lower 16 bits of an LPARAM.
 u16 LOWORD(i64 v) { return cast(u16, cast(u32, v) & cast(u32, 65535)); }
 u16 HIWORD(i64 v) { return cast(u16, (cast(u32, v) >> cast(u32, 16)) & cast(u32, 65535)); }
@@ -437,6 +532,175 @@ THIRTEEN_GUID IID_ID3D12Debug = THIRTEEN_GUID{ cast(u32, 0x344488B7), cast(u16, 
       cast(u8, 0x44), cast(u8, 0x82), cast(u8, 0x45), cast(u8, 0xE0) } };
 
 }  // when os(windows) — constants
+
+// --- Borderless + window drag (Windows) -------------------------------------
+// The transpiled body owns window creation, so decoration is applied
+// by restyling the live window the same way set_fullscreen does.
+// Dragging runs from thirteen's own pump rather than handing off to
+// WM_NCLBUTTONDOWN/HTCAPTION: the OS move loop blocks until the mouse
+// is released, which would stall the caller's frame loop.
+
+when os(windows) {
+
+extern "user32.dll" i32 GetWindowRect(void* hWnd, void* lpRect);
+extern "user32.dll" i32 GetCursorPos(void* lpPoint);
+extern "user32.dll" void* SetCapture(void* hWnd);
+extern "user32.dll" i32 ReleaseCapture();
+extern "user32.dll" i64 SetWindowLongPtrW(void* hWnd, i32 nIndex, i64 dwNewLong);
+extern "user32.dll" i64 CallWindowProcW(void* lpPrevWndFunc, void* hWnd, u32 Msg,
+                                        u64 wParam, i64 lParam);
+extern "shell32.dll" void DragAcceptFiles(void* hWnd, i32 fAccept);
+extern "shell32.dll" u32 DragQueryFileA(void* hDrop, u32 iFile, u8* lpszFile, u32 cch);
+extern "shell32.dll" void DragFinish(void* hDrop);
+
+u32 SWP_NOACTIVATE = cast(u32, 16);   // 0x0010
+
+// Style for a non-fullscreen window: no resize or maximize box, and
+// no frame at all when undecorated. The transpiled body computes the
+// same expression inline in three places; the publish points those at
+// this helper so decoration is honoured when the window is resized.
+u32 thirteen_windowed_style() {
+    if !thirteen_decorated { return WS_POPUP; }
+    return WS_OVERLAPPEDWINDOW & ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
+}
+
+void thirteen_quit() {
+    thirteen_should_quit = true;
+}
+
+void thirteen_get_window_position(i32* x, i32* y) {
+    *x = 0;
+    *y = 0;
+    if thirteen_platform_ptr == null { return; }
+    noinit RECT wr;
+    GetWindowRect(thirteen_platform_ptr.hwnd, &wr);
+    *x = wr.left;
+    *y = wr.top;
+}
+
+void thirteen_set_window_position(i32 x, i32 y) {
+    if thirteen_platform_ptr == null { return; }
+    SetWindowPos(thirteen_platform_ptr.hwnd, null, x, y, 0, 0,
+                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+void thirteen_set_decorated(bool decorated) {
+    if thirteen_decorated == decorated { return; }
+    thirteen_decorated = decorated;
+    if thirteen_platform_ptr == null || thirteen_is_fullscreen { return; }
+
+    // Keep the client area the same size across the restyle: the
+    // frame the old style added has to come off the outer rect.
+    noinit RECT wr;
+    GetWindowRect(thirteen_platform_ptr.hwnd, &wr);
+    u32 style = thirteen_windowed_style();
+    SetWindowLongW(thirteen_platform_ptr.hwnd, GWL_STYLE, cast(i32, style | WS_VISIBLE));
+    noinit RECT rect;
+    rect.left = 0;
+    rect.top = 0;
+    rect.right = cast(LONG, thirteen_width);
+    rect.bottom = cast(LONG, thirteen_height);
+    AdjustWindowRect(&rect, style, FALSE);
+    SetWindowPos(thirteen_platform_ptr.hwnd, null, wr.left, wr.top,
+                 rect.right - rect.left, rect.bottom - rect.top,
+                 SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+void thirteen_begin_window_drag() {
+    if thirteen_platform_ptr == null || thirteen_is_fullscreen { return; }
+    noinit POINT pt;
+    GetCursorPos(&pt);
+    noinit RECT wr;
+    GetWindowRect(thirteen_platform_ptr.hwnd, &wr);
+    thirteen_drag_cursor_x = pt.x;
+    thirteen_drag_cursor_y = pt.y;
+    thirteen_drag_window_x = wr.left;
+    thirteen_drag_window_y = wr.top;
+    thirteen_dragging = true;
+    // Capture keeps the button-up coming to us if the cursor leaves
+    // the window mid-drag.
+    SetCapture(thirteen_platform_ptr.hwnd);
+}
+
+void thirteen_get_screen_size(i32* w, i32* h) {
+    *w = GetSystemMetrics(SM_CXSCREEN);
+    *h = GetSystemMetrics(SM_CYSCREEN);
+}
+
+// --- file drop ---
+// The transpiled body owns the window procedure, so rather than
+// patch it, enabling drops subclasses the window and forwards
+// everything except WM_DROPFILES to the original.
+private {
+const u32 WM_DROPFILES = cast(u32, 563);   // 0x0233
+const i32 GWLP_WNDPROC = -4;
+const u32 DRAG_QUERY_COUNT = cast(u32, 4294967295);
+void* _t13_prev_wndproc = null;
+
+i64 _t13_drop_wndproc(void* hwnd, u32 msg, u64 wParam, i64 lParam) {
+    if msg == WM_DROPFILES {
+        void* hdrop = cast(void*, wParam);
+        i32 n = cast(i32, DragQueryFileA(hdrop, DRAG_QUERY_COUNT, null, 0));
+        if n > THIRTEEN_MAX_DROPPED { n = THIRTEEN_MAX_DROPPED; }
+        for i32 i = 0; i < n; i++ {
+            ignore DragQueryFileA(hdrop, cast(u32, i),
+                                  &thirteen_dropped_buf[i * THIRTEEN_DROP_PATH],
+                                  cast(u32, THIRTEEN_DROP_PATH));
+        }
+        thirteen_dropped_n = n;
+        DragFinish(hdrop);
+        return 0;
+    }
+    return CallWindowProcW(_t13_prev_wndproc, hwnd, msg, wParam, lParam);
+}
+}
+
+void thirteen_set_file_drop(bool enabled) {
+    if thirteen_platform_ptr == null { return; }
+    void* hwnd = thirteen_platform_ptr.hwnd;
+    if enabled && _t13_prev_wndproc == null {
+        _t13_prev_wndproc = cast(void*,
+            SetWindowLongPtrW(hwnd, GWLP_WNDPROC, cast(i64, _t13_drop_wndproc)));
+    }
+    i32 accept = 0;
+    if enabled { accept = 1; }
+    DragAcceptFiles(hwnd, accept);
+}
+
+void thirteen_minimize() {
+    if thirteen_platform_ptr == null { return; }
+    ShowWindow(thirteen_platform_ptr.hwnd, SW_MINIMIZE);
+}
+
+void thirteen_set_always_on_top(bool on) {
+    thirteen_always_on_top = on;
+    if thirteen_platform_ptr == null { return; }
+    // HWND_TOPMOST = -1, HWND_NOTOPMOST = -2.
+    void* z = cast(void*, cast(i64, 0) - 2);
+    if on { z = cast(void*, cast(i64, 0) - 1); }
+    SetWindowPos(thirteen_platform_ptr.hwnd, z, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
+void thirteen_drag_update() {
+    if !thirteen_dragging { return; }
+    if thirteen_platform_ptr == null || !thirteen_mouse_buttons[0] {
+        thirteen_dragging = false;
+        ReleaseCapture();
+        return;
+    }
+    noinit POINT pt;
+    GetCursorPos(&pt);
+    i32 x = thirteen_drag_window_x + (pt.x - thirteen_drag_cursor_x);
+    i32 y = thirteen_drag_window_y + (pt.y - thirteen_drag_cursor_y);
+    noinit RECT wr;
+    GetWindowRect(thirteen_platform_ptr.hwnd, &wr);
+    thirteen_apply_snap(&x, &y, wr.right - wr.left, wr.bottom - wr.top);
+    SetWindowPos(thirteen_platform_ptr.hwnd, null, x, y, 0, 0,
+                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+}  // when os(windows) — borderless + drag
 
 when os(windows) {
 enum __enum_PROCESS_DPI_UNAWARE {
@@ -1326,32 +1590,41 @@ struct ThirteenRenderer {
 
 // ========== Platform-Specific Includes ==========
 // ========== Common Includes ==========
-when !defined(THIRTEEN_PLATFORM_WINDOWS) {
-}
 // ========== Internal State ==========
-private { thirteen_uint32 thirteen_width = 320; }
-private { thirteen_uint32 thirteen_height = 200; }
-private { bool thirteen_should_quit = false; }
-private { bool thirteen_vsync_enabled = true; }
-private { bool thirteen_is_fullscreen = false; }
-private { u8[256] thirteen_app_name = {84, 104, 105, 114, 116, 101, 101, 110, 65, 112, 112, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}; }
-private { f64 thirteen_last_frame_time = 0.0; }
-private { f64 thirteen_last_delta_time = 0.0; }
-private { f64 thirteen_frame_time_sum = 0.0; }
-private { i32 thirteen_frame_count = 0; }
-private { f64 thirteen_average_fps = 0.0; }
-private { f64 thirteen_title_update_timer = 0.0; }
-private { i32 thirteen_mouse_x = 0; }
-private { i32 thirteen_mouse_y = 0; }
-private { i32 thirteen_prev_mouse_x = 0; }
-private { i32 thirteen_prev_mouse_y = 0; }
-private { bool[3] thirteen_mouse_buttons = {false, false, false}; }
-private { bool[3] thirteen_prev_mouse_buttons = {false, false, false}; }
-private { bool[256] thirteen_keys; }
-private { bool[256] thirteen_prev_keys; }
-private { thirteen_uint8* thirteen_pixels_buf = null; }
-// ========== Timing ==========
 private {
+thirteen_uint32 thirteen_width = 320;
+thirteen_uint32 thirteen_height = 200;
+bool thirteen_should_quit = false;
+bool thirteen_vsync_enabled = true;
+bool thirteen_is_fullscreen = false;
+u8[256] thirteen_app_name = {
+    84, 104, 105, 114, 116, 101, 101, 110, 65, 112, 112, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0,
+};
+f64 thirteen_last_frame_time = 0.0;
+f64 thirteen_last_delta_time = 0.0;
+f64 thirteen_frame_time_sum = 0.0;
+i32 thirteen_frame_count = 0;
+f64 thirteen_average_fps = 0.0;
+f64 thirteen_title_update_timer = 0.0;
+i32 thirteen_mouse_x = 0;
+i32 thirteen_mouse_y = 0;
+i32 thirteen_prev_mouse_x = 0;
+i32 thirteen_prev_mouse_y = 0;
+bool[3] thirteen_mouse_buttons = {false, false, false};
+bool[3] thirteen_prev_mouse_buttons = {false, false, false};
+bool[256] thirteen_keys;
+bool[256] thirteen_prev_keys;
+thirteen_uint8* thirteen_pixels_buf = null;
+
+// ========== Timing ==========
 f64 thirteen_now_seconds() {
     noinit LARGE_INTEGER freq;
     noinit LARGE_INTEGER counter;
@@ -1362,8 +1635,11 @@ f64 thirteen_now_seconds() {
 // ==========================================================================
 // WINDOWS BACKEND
 // ==========================================================================
-u16[20] THIRTEEN_WND_CLASS = {84, 104, 105, 114, 116, 101, 101, 110, 87, 105, 110, 100, 111, 119, 67, 108, 97, 115, 115, 0};
+u16[20] THIRTEEN_WND_CLASS = {
+    84, 104, 105, 114, 116, 101, 101, 110, 87, 105, 110, 100, 111, 119, 67, 108, 97, 115, 115, 0,
+};
 }
+
 // --- Platform functions ---
 private {
 bool thirteen_platform_init_window(ThirteenPlatform* p, thirteen_uint32 width, thirteen_uint32 height) {
@@ -1384,19 +1660,20 @@ bool thirteen_platform_init_window(ThirteenPlatform* p, thirteen_uint32 width, t
     } else {
         return false;
     }
-    style = WS_OVERLAPPEDWINDOW & ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
+    style = thirteen_windowed_style();
     rect.left = 0;
     rect.top = 0;
     rect.right = cast(LONG, width);
     rect.bottom = cast(LONG, height);
     AdjustWindowRect(&rect, style, FALSE);
-    p.hwnd = CreateWindowExW(0, THIRTEEN_WND_CLASS, cast(u16*, __wide_literal("Thirteen")), style, cast(i32, 2147483648), cast(i32, 2147483648), rect.right - rect.left, rect.bottom - rect.top, null, null, GetModuleHandleA(null), null);
+    p.hwnd = CreateWindowExW(0, THIRTEEN_WND_CLASS, cast(u16*, __wide_literal("Thirteen")), style, cast(i32, 0x80000000), cast(i32, 0x80000000), rect.right - rect.left, rect.bottom - rect.top, null, null, GetModuleHandleA(null), null);
     if p.hwnd == null {
         return false;
     }
     ShowWindow(p.hwnd, SW_SHOW);
     return true;
 }
+
 void thirteen_platform_pump_messages(ThirteenPlatform* p) {
     noinit MSG msg;
     ignore p;
@@ -1405,11 +1682,13 @@ void thirteen_platform_pump_messages(ThirteenPlatform* p) {
         DispatchMessageW(&msg);
     }
 }
+
 void thirteen_platform_set_title(ThirteenPlatform* p, u8* title) {
     if p.hwnd != null {
         SetWindowTextA(p.hwnd, title);
     }
 }
+
 void thirteen_platform_set_fullscreen(ThirteenPlatform* p, bool fullscreen, thirteen_uint32 width, thirteen_uint32 height) {
     if p.hwnd == null {
         return;
@@ -1423,7 +1702,7 @@ void thirteen_platform_set_fullscreen(ThirteenPlatform* p, bool fullscreen, thir
         GetMonitorInfoA(hMonitor, &mi);
         SetWindowPos(p.hwnd, null, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_FRAMECHANGED);
     } else {
-        DWORD style = WS_OVERLAPPEDWINDOW & ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
+        DWORD style = thirteen_windowed_style();
         noinit RECT rect;
         i32 screenWidth;
         i32 screenHeight;
@@ -1446,6 +1725,7 @@ void thirteen_platform_set_fullscreen(ThirteenPlatform* p, bool fullscreen, thir
         SetWindowPos(p.hwnd, null, x, y, windowWidth, windowHeight, SWP_FRAMECHANGED);
     }
 }
+
 void thirteen_platform_resize_window(ThirteenPlatform* p, thirteen_uint32 width, thirteen_uint32 height, bool isFullscreen) {
     DWORD style;
     noinit RECT rect;
@@ -1458,7 +1738,7 @@ void thirteen_platform_resize_window(ThirteenPlatform* p, thirteen_uint32 width,
     if !p.hwnd || isFullscreen {
         return;
     }
-    style = WS_OVERLAPPEDWINDOW & ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
+    style = thirteen_windowed_style();
     rect.left = 0;
     rect.top = 0;
     rect.right = cast(LONG, width);
@@ -1472,9 +1752,11 @@ void thirteen_platform_resize_window(ThirteenPlatform* p, thirteen_uint32 width,
     y = (screenHeight - windowHeight) / 2;
     SetWindowPos(p.hwnd, null, x, y, windowWidth, windowHeight, SWP_FRAMECHANGED);
 }
+
 ThirteenNativeWindowHandle thirteen_platform_get_window_handle(ThirteenPlatform* p) {
     return p.hwnd;
 }
+
 void thirteen_platform_shutdown_window(ThirteenPlatform* p) {
     if p.hwnd != null {
         DestroyWindow(p.hwnd);
@@ -1485,6 +1767,7 @@ void thirteen_platform_shutdown_window(ThirteenPlatform* p) {
         p.ownsClassRegistration = false;
     }
 }
+
 // --- Renderer functions ---
 void thirteen_renderer_wait_for_gpu(ThirteenRenderer* r) {
     UINT64 currentFenceValue;
@@ -1496,9 +1779,10 @@ void thirteen_renderer_wait_for_gpu(ThirteenRenderer* r) {
     r.fenceValue++;
     if r.fence.lpVtbl.GetCompletedValue(r.fence) < currentFenceValue {
         r.fence.lpVtbl.SetEventOnCompletion(r.fence, currentFenceValue, r.fenceEvent);
-        WaitForSingleObject(r.fenceEvent, INFINITE);
+        _thirteen_WaitForSingleObject(r.fenceEvent, INFINITE);
     }
 }
+
 void thirteen_renderer_release_render_targets(ThirteenRenderer* r) {
     if r.renderTargets[0] != null {
         r.renderTargets[0].lpVtbl.Release(r.renderTargets[0]);
@@ -1509,6 +1793,7 @@ void thirteen_renderer_release_render_targets(ThirteenRenderer* r) {
         r.renderTargets[1] = null;
     }
 }
+
 bool thirteen_renderer_create_upload_buffer(ThirteenRenderer* r, thirteen_uint32 width, thirteen_uint32 height) {
     noinit D3D12_HEAP_PROPERTIES heapProps;
     noinit D3D12_RESOURCE_DESC bufferDesc;
@@ -1534,6 +1819,7 @@ bool thirteen_renderer_create_upload_buffer(ThirteenRenderer* r, thirteen_uint32
     bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     return r.device.lpVtbl.CreateCommittedResource(r.device, &heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc, D3D12_RESOURCE_STATE_GENERIC_READ, null, &IID_ID3D12Resource, cast(void**, &r.uploadBuffer)) >= 0;
 }
+
 bool thirteen_renderer_init(ThirteenRenderer* r, ThirteenPlatform* p, thirteen_uint32 width, thirteen_uint32 height) {
     ThirteenNativeWindowHandle hwnd = thirteen_platform_get_window_handle(p);
     IDXGIFactory4* factory = null;
@@ -1626,6 +1912,7 @@ bool thirteen_renderer_init(ThirteenRenderer* r, ThirteenPlatform* p, thirteen_u
     r.fenceEvent = CreateEventA(null, FALSE, FALSE, null);
     return r.fenceEvent != null;
 }
+
 bool thirteen_renderer_render(ThirteenRenderer* r, thirteen_uint8* pixels, thirteen_uint32 width, thirteen_uint32 height, bool vsyncEnabled) {
     void* mappedData = null;
     noinit D3D12_RANGE readRange;
@@ -1684,6 +1971,7 @@ bool thirteen_renderer_render(ThirteenRenderer* r, thirteen_uint8* pixels, thirt
     presentFlags = cast(u32, !vsyncEnabled && r.tearingSupported ? DXGI_PRESENT_ALLOW_TEARING : 0);
     return r.swapChain.lpVtbl.Present(r.swapChain, syncInterval, presentFlags) >= 0;
 }
+
 bool thirteen_renderer_resize(ThirteenRenderer* r, thirteen_uint32 width, thirteen_uint32 height) {
     HRESULT hr;
     noinit D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle;
@@ -1712,6 +2000,7 @@ bool thirteen_renderer_resize(ThirteenRenderer* r, thirteen_uint32 width, thirte
     r.frameIndex = r.swapChain.lpVtbl.GetCurrentBackBufferIndex(r.swapChain);
     return true;
 }
+
 void thirteen_renderer_shutdown(ThirteenRenderer* r) {
     thirteen_renderer_wait_for_gpu(r);
     if r.fenceEvent != null {
@@ -1749,6 +2038,7 @@ void thirteen_renderer_shutdown(ThirteenRenderer* r) {
 // ========== Platform/Renderer Pointers ==========
 ThirteenPlatform* thirteen_platform_ptr = null;
 ThirteenRenderer* thirteen_renderer_ptr = null;
+
 // ========== WndProc (Windows only) ==========
 LRESULT thirteen_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch msg {
@@ -1821,6 +2111,7 @@ LRESULT thirteen_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     }
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
+
 // ========== Public API ==========
 }
 thirteen_uint8* thirteen_init(thirteen_uint32 width, thirteen_uint32 height, bool fullscreen) {
@@ -1859,6 +2150,7 @@ thirteen_uint8* thirteen_init(thirteen_uint32 width, thirteen_uint32 height, boo
     return thirteen_pixels_buf;
 }
 private {
+
 }
 bool thirteen_render() {
     f64 currentTime;
@@ -1898,21 +2190,25 @@ bool thirteen_render() {
     return !thirteen_should_quit;
 }
 private {
+
 }
 void thirteen_set_vsync(bool enabled) {
     thirteen_vsync_enabled = enabled;
 }
 private {
+
 }
 bool thirteen_get_vsync() {
     return thirteen_vsync_enabled;
 }
 private {
+
 }
 void thirteen_set_application_name(u8* name) {
     _thirteen_strcpy(thirteen_app_name, sizeof(thirteen_app_name), name);
 }
 private {
+
 }
 void thirteen_set_fullscreen(bool fullscreen) {
     if thirteen_is_fullscreen == fullscreen {
@@ -1924,26 +2220,31 @@ void thirteen_set_fullscreen(bool fullscreen) {
     }
 }
 private {
+
 }
 bool thirteen_get_fullscreen() {
     return thirteen_is_fullscreen;
 }
 private {
+
 }
 thirteen_uint32 thirteen_get_width() {
     return thirteen_width;
 }
 private {
+
 }
 thirteen_uint32 thirteen_get_height() {
     return thirteen_height;
 }
 private {
+
 }
 ThirteenNativeWindowHandle thirteen_get_window_handle() {
     return thirteen_platform_get_window_handle(thirteen_platform_ptr);
 }
 private {
+
 }
 thirteen_uint8* thirteen_set_size(thirteen_uint32 width, thirteen_uint32 height) {
     thirteen_uint8* reallocResult;
@@ -1966,23 +2267,27 @@ thirteen_uint8* thirteen_set_size(thirteen_uint32 width, thirteen_uint32 height)
     return thirteen_pixels_buf;
 }
 private {
+
 }
 f64 thirteen_get_delta_time() {
     return thirteen_last_delta_time;
 }
 private {
+
 }
 void thirteen_get_mouse_position(i32* x, i32* y) {
     *x = thirteen_mouse_x;
     *y = thirteen_mouse_y;
 }
 private {
+
 }
 void thirteen_get_mouse_position_last_frame(i32* x, i32* y) {
     *x = thirteen_prev_mouse_x;
     *y = thirteen_prev_mouse_y;
 }
 private {
+
 }
 bool thirteen_get_mouse_button(i32 button) {
     if button >= 0 && button < 3 {
@@ -1991,6 +2296,7 @@ bool thirteen_get_mouse_button(i32 button) {
     return false;
 }
 private {
+
 }
 bool thirteen_get_mouse_button_last_frame(i32 button) {
     if button >= 0 && button < 3 {
@@ -1999,6 +2305,7 @@ bool thirteen_get_mouse_button_last_frame(i32 button) {
     return false;
 }
 private {
+
 }
 bool thirteen_get_key(i32 keyCode) {
     if keyCode >= 0 && keyCode < 256 {
@@ -2007,6 +2314,7 @@ bool thirteen_get_key(i32 keyCode) {
     return false;
 }
 private {
+
 }
 bool thirteen_get_key_last_frame(i32 keyCode) {
     if keyCode >= 0 && keyCode < 256 {
@@ -2015,6 +2323,7 @@ bool thirteen_get_key_last_frame(i32 keyCode) {
     return false;
 }
 private {
+
 }
 void thirteen_shutdown() {
     if thirteen_renderer_ptr != null {
@@ -2033,14 +2342,29 @@ void thirteen_shutdown() {
 private {
 }
 
+// Widen an ASCII string to UTF-16 for the wide-char Win32 entry points.
+private {
+u16* __wide_literal(u8* s) {
+    if s == null { return null; }
+    i32 n = 0;
+    while *(s + n) != 0 { n = n + 1; }
+    u16* buf = alloc<u16>(n + 1);
+    for i32 i = 0; i < n; i = i + 1 {
+        *(buf + i) = cast(u16, *(s + i));
+    }
+    *(buf + n) = 0;
+    return buf;
+}
+}
+
 }
 
 // ----------------------------------------------------------------------------
 // Linux arm (X11 + GLX + OpenGL)
 // ----------------------------------------------------------------------------
 // linux_thirteen — X11 / GLX / OpenGL surface the Linux arm calls that
-// isn't covered by minc builtins (malloc/free/memset/memcpy) or the
-// common thirteen_libc helpers (timespec/clock_gettime). The Linux twin
+// isn't covered by minc builtins (alloc/free/memset/memcpy) or the
+// common thirteen_libc string helpers. The Linux twin
 // of ext/win32_thirteen.mc and ext/macos_thirteen.mc: a per-OS hand shim
 // concatenated AHEAD of the transpiled body.
 //
@@ -2150,11 +2474,179 @@ const u32 GL_NEAREST           = 0x2600;
 
 }  // when os(linux)
 
-when os(linux) {
-// transminc: C #define values surfaced as compile-time configuration
-@define "VK_ESCAPE" 27
-@define "VK_SPACE" 32
+// --- Borderless + window drag (Linux) ---------------------------------------
+// The backend is pure-dlopen and its ThirteenPlatform comes from the
+// transpiled body, so the handful of extra X11 entry points needed
+// here are dlsym'd into this shim's own pointers off the already-open
+// x11Library. Undecorated is the _MOTIF_WM_HINTS convention every
+// mainstream WM still honours.
 
+when os(linux) {
+
+private {
+fn(Display*, Window, i32, i32): i32 _t13_XMoveWindow = null;
+fn(Display*, Window, Window*, Window*, i32*, i32*, i32*, i32*, u32*): i32 _t13_XQueryPointer = null;
+fn(Display*, Window, Atom, Atom, i32, i32, u8*, i32): i32 _t13_XChangeProperty = null;
+fn(Display*, Window, i32*, i32*, Window*): i32 _t13_XTranslateCoordinates = null;
+fn(Display*, i32): i32 _t13_XDisplayWidth = null;
+fn(Display*, i32): i32 _t13_XDisplayHeight = null;
+fn(Display*, Window, i32): i32 _t13_XIconifyWindow = null;
+bool _t13_x11_loaded = false;
+
+// MOTIF hints: flags=2 (decorations), decorations=0 (none) / 1 (all).
+struct _T13MotifHints {
+    u64 flags;
+    u64 functions;
+    u64 decorations;
+    i64 input_mode;
+    u64 status;
+}
+
+bool _t13_x11_load() {
+    if _t13_x11_loaded { return _t13_XMoveWindow != null; }
+    _t13_x11_loaded = true;
+    if thirteen_platform_ptr == null { return false; }
+    void* lib = thirteen_platform_ptr.x11Library;
+    if lib == null { return false; }
+    _t13_XMoveWindow = cast(fn(Display*, Window, i32, i32): i32,
+                            dlsym(lib, "XMoveWindow"));
+    _t13_XQueryPointer = cast(fn(Display*, Window, Window*, Window*, i32*, i32*, i32*, i32*, u32*): i32,
+                              dlsym(lib, "XQueryPointer"));
+    _t13_XChangeProperty = cast(fn(Display*, Window, Atom, Atom, i32, i32, u8*, i32): i32,
+                                dlsym(lib, "XChangeProperty"));
+    _t13_XTranslateCoordinates = cast(fn(Display*, Window, i32*, i32*, Window*): i32,
+                                      dlsym(lib, "XTranslateCoordinates"));
+    _t13_XDisplayWidth = cast(fn(Display*, i32): i32, dlsym(lib, "XDisplayWidth"));
+    _t13_XDisplayHeight = cast(fn(Display*, i32): i32, dlsym(lib, "XDisplayHeight"));
+    _t13_XIconifyWindow = cast(fn(Display*, Window, i32): i32,
+                               dlsym(lib, "XIconifyWindow"));
+    return _t13_XMoveWindow != null;
+}
+
+// Root-relative pointer position.
+bool _t13_pointer(i32* x, i32* y) {
+    if !_t13_x11_load() || _t13_XQueryPointer == null { return false; }
+    ThirteenPlatform* p = thirteen_platform_ptr;
+    noinit Window root;
+    noinit Window child;
+    noinit i32 rx;
+    noinit i32 ry;
+    noinit i32 wx;
+    noinit i32 wy;
+    noinit u32 mask;
+    if _t13_XQueryPointer(p.x11Display, p.x11Window, &root, &child,
+                          &rx, &ry, &wx, &wy, &mask) == 0 { return false; }
+    *x = rx;
+    *y = ry;
+    return true;
+}
+}
+
+void thirteen_quit() {
+    thirteen_should_quit = true;
+}
+
+void thirteen_get_window_position(i32* x, i32* y) {
+    *x = 0;
+    *y = 0;
+    if !_t13_x11_load() || _t13_XTranslateCoordinates == null { return; }
+    ThirteenPlatform* p = thirteen_platform_ptr;
+    noinit i32 sx;
+    noinit i32 sy;
+    noinit Window child;
+    i32 zero_x = 0;
+    i32 zero_y = 0;
+    ignore _t13_XTranslateCoordinates(p.x11Display, p.x11Window,
+                                      &zero_x, &zero_y, &child);
+    sx = zero_x;
+    sy = zero_y;
+    *x = sx;
+    *y = sy;
+}
+
+void thirteen_set_window_position(i32 x, i32 y) {
+    if !_t13_x11_load() { return; }
+    ignore _t13_XMoveWindow(thirteen_platform_ptr.x11Display,
+                            thirteen_platform_ptr.x11Window, x, y);
+}
+
+void thirteen_set_decorated(bool decorated) {
+    if thirteen_decorated == decorated { return; }
+    thirteen_decorated = decorated;
+    if !_t13_x11_load() || _t13_XChangeProperty == null { return; }
+    ThirteenPlatform* p = thirteen_platform_ptr;
+    Atom hints_atom = XInternAtom(p.x11Display, "_MOTIF_WM_HINTS", False);
+    if hints_atom == 0 { return; }
+    noinit _T13MotifHints hints;
+    hints.flags = 2;
+    hints.functions = 0;
+    hints.decorations = 0;
+    if decorated { hints.decorations = 1; }
+    hints.input_mode = 0;
+    hints.status = 0;
+    // PropModeReplace = 0, format 32, 5 longs.
+    ignore _t13_XChangeProperty(p.x11Display, p.x11Window, hints_atom,
+                                hints_atom, 32, 0, cast(u8*, &hints), 5);
+}
+
+void thirteen_begin_window_drag() {
+    if thirteen_is_fullscreen { return; }
+    noinit i32 px;
+    noinit i32 py;
+    if !_t13_pointer(&px, &py) { return; }
+    noinit i32 wx;
+    noinit i32 wy;
+    thirteen_get_window_position(&wx, &wy);
+    thirteen_drag_cursor_x = px;
+    thirteen_drag_cursor_y = py;
+    thirteen_drag_window_x = wx;
+    thirteen_drag_window_y = wy;
+    thirteen_dragging = true;
+}
+
+// XDND is a multi-message protocol (XdndEnter/Position/Status/Drop
+// plus a selection transfer), not a single event; not implemented.
+// The call is accepted so app code stays portable.
+void thirteen_set_file_drop(bool enabled) { ignore enabled; }
+
+// _NET_WM_STATE_ABOVE needs a client message to the root window;
+// not implemented, so the flag is recorded and nothing else happens.
+void thirteen_set_always_on_top(bool on) { thirteen_always_on_top = on; }
+
+void thirteen_get_screen_size(i32* w, i32* h) {
+    *w = 0;
+    *h = 0;
+    if !_t13_x11_load() || _t13_XDisplayWidth == null { return; }
+    Display* d = thirteen_platform_ptr.x11Display;
+    i32 screen = DefaultScreen(d);
+    *w = _t13_XDisplayWidth(d, screen);
+    *h = _t13_XDisplayHeight(d, screen);
+}
+
+void thirteen_minimize() {
+    if !_t13_x11_load() || _t13_XIconifyWindow == null { return; }
+    Display* d = thirteen_platform_ptr.x11Display;
+    ignore _t13_XIconifyWindow(d, thirteen_platform_ptr.x11Window, DefaultScreen(d));
+}
+
+void thirteen_drag_update() {
+    if !thirteen_dragging { return; }
+    if !thirteen_mouse_buttons[0] {
+        thirteen_dragging = false;
+        return;
+    }
+    noinit i32 px;
+    noinit i32 py;
+    if !_t13_pointer(&px, &py) { return; }
+    i32 x = thirteen_drag_window_x + (px - thirteen_drag_cursor_x);
+    i32 y = thirteen_drag_window_y + (py - thirteen_drag_cursor_y);
+    thirteen_apply_snap(&x, &y, cast(i32, thirteen_width), cast(i32, thirteen_height));
+    thirteen_set_window_position(x, y);
+}
+
+}  // when os(linux) — borderless + drag
+
+when os(linux) {
 enum __enum_XkbKeyNameLength {
     XkbKeyNameLength = 4,
 }
@@ -2678,39 +3170,44 @@ struct ThirteenRenderer {
 }
 
 // ========== Internal State ==========
-private { thirteen_uint32 thirteen_width = 320; }
-private { thirteen_uint32 thirteen_height = 200; }
-private { bool thirteen_should_quit = false; }
-private { bool thirteen_vsync_enabled = true; }
-private { bool thirteen_is_fullscreen = false; }
-private { u8[256] thirteen_app_name = {84, 104, 105, 114, 116, 101, 101, 110, 65, 112, 112, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}; }
-private { f64 thirteen_last_frame_time = 0.0; }
-private { f64 thirteen_last_delta_time = 0.0; }
-private { f64 thirteen_frame_time_sum = 0.0; }
-private { i32 thirteen_frame_count = 0; }
-private { f64 thirteen_average_fps = 0.0; }
-private { f64 thirteen_title_update_timer = 0.0; }
-private { i32 thirteen_mouse_x = 0; }
-private { i32 thirteen_mouse_y = 0; }
-private { i32 thirteen_prev_mouse_x = 0; }
-private { i32 thirteen_prev_mouse_y = 0; }
-private { bool[3] thirteen_mouse_buttons = {false, false, false}; }
-private { bool[3] thirteen_prev_mouse_buttons = {false, false, false}; }
-private { bool[256] thirteen_keys; }
-private { bool[256] thirteen_prev_keys; }
-private { thirteen_uint8* thirteen_pixels_buf = null; }
-// ========== Timing ==========
 private {
+thirteen_uint32 thirteen_width = 320;
+thirteen_uint32 thirteen_height = 200;
+bool thirteen_should_quit = false;
+bool thirteen_vsync_enabled = true;
+bool thirteen_is_fullscreen = false;
+u8[256] thirteen_app_name = {
+    84, 104, 105, 114, 116, 101, 101, 110, 65, 112, 112, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0,
+};
+f64 thirteen_last_frame_time = 0.0;
+f64 thirteen_last_delta_time = 0.0;
+f64 thirteen_frame_time_sum = 0.0;
+i32 thirteen_frame_count = 0;
+f64 thirteen_average_fps = 0.0;
+f64 thirteen_title_update_timer = 0.0;
+i32 thirteen_mouse_x = 0;
+i32 thirteen_mouse_y = 0;
+i32 thirteen_prev_mouse_x = 0;
+i32 thirteen_prev_mouse_y = 0;
+bool[3] thirteen_mouse_buttons = {false, false, false};
+bool[3] thirteen_prev_mouse_buttons = {false, false, false};
+bool[256] thirteen_keys;
+bool[256] thirteen_prev_keys;
+thirteen_uint8* thirteen_pixels_buf = null;
+
+// ========== Timing ==========
 f64 thirteen_now_seconds() {
-    when defined(THIRTEEN_PLATFORM_WINDOWS) {
-        // TODO transminc: untranslatable platform branch
-    } else when arch(wasm) {
-    } else {
-        timespec ts;
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-        return cast(f64, ts.tv_sec) + cast(f64, ts.tv_nsec) / 1000000000.0;
-    }
+    return cast(f64, qpc()) / cast(f64, qpf());
 }
+
 i32 thirteen_platform_remap_mouse_button(i32 x11Button) {
     switch x11Button {
         case 1: {
@@ -2727,6 +3224,7 @@ i32 thirteen_platform_remap_mouse_button(i32 x11Button) {
         }
     }
 }
+
 i32 thirteen_platform_remap_key_event(ThirteenPlatform* p, XKeyEvent* event) {
     KeySym keysym = 0;
     u8[8] buf;
@@ -2736,6 +3234,7 @@ i32 thirteen_platform_remap_key_event(ThirteenPlatform* p, XKeyEvent* event) {
     }
     return buf[0];
 }
+
 bool thirteen_platform_init_window(ThirteenPlatform* p, thirteen_uint32 width, thirteen_uint32 height) {
     fn(u8*): Display* XOpenDisplay;
     fn(Display*, i32): Screen* XScreenOfDisplay;
@@ -2749,7 +3248,11 @@ bool thirteen_platform_init_window(ThirteenPlatform* p, thirteen_uint32 width, t
     fn(Display*, GLXFBConfig, GLXContext, Bool, i32*): GLXContext glXCreateContextAttribsARB;
     fn(Display*, GLXDrawable, GLXContext): Bool glXMakeCurrent;
     fn(u8*): glx_proc_t glXGetProcAddress;
-    i32[19] fbConfigAttribs = {GLX_X_RENDERABLE, True, GLX_DRAWABLE_TYPE, GLX_WINDOW_BIT, GLX_RENDER_TYPE, GLX_RGBA_BIT, GLX_X_VISUAL_TYPE, GLX_TRUE_COLOR, GLX_RED_SIZE, 8, GLX_GREEN_SIZE, 8, GLX_BLUE_SIZE, 8, GLX_ALPHA_SIZE, 8, GLX_DOUBLEBUFFER, True, None};
+    i32[19] fbConfigAttribs = {
+        GLX_X_RENDERABLE, True, GLX_DRAWABLE_TYPE, GLX_WINDOW_BIT, GLX_RENDER_TYPE, GLX_RGBA_BIT,
+        GLX_X_VISUAL_TYPE, GLX_TRUE_COLOR, GLX_RED_SIZE, 8, GLX_GREEN_SIZE, 8, GLX_BLUE_SIZE, 8,
+        GLX_ALPHA_SIZE, 8, GLX_DOUBLEBUFFER, True, None,
+    };
     i32 fbConfigCount;
     GLXFBConfig* fbConfigs;
     GLXFBConfig fbConfig;
@@ -2758,7 +3261,10 @@ bool thirteen_platform_init_window(ThirteenPlatform* p, thirteen_uint32 width, t
     noinit XSetWindowAttributes windowAttributes;
     XSizeHints* sizeHints;
     u8* closeWindowName = "WM_DELETE_WINDOW";
-    i32[7] glxContextAttributes = {GLX_CONTEXT_MAJOR_VERSION_ARB, 3, GLX_CONTEXT_MINOR_VERSION_ARB, 2, GLX_CONTEXT_PROFILE_MASK_ARB, GLX_CONTEXT_CORE_PROFILE_BIT_ARB, None};
+    i32[7] glxContextAttributes = {
+        GLX_CONTEXT_MAJOR_VERSION_ARB, 3, GLX_CONTEXT_MINOR_VERSION_ARB, 2,
+        GLX_CONTEXT_PROFILE_MASK_ARB, GLX_CONTEXT_CORE_PROFILE_BIT_ARB, None,
+    };
     p.x11Library = dlopen("libX11.so", RTLD_LAZY | RTLD_LOCAL);
     if p.x11Library == null {
         return false;
@@ -2953,6 +3459,7 @@ bool thirteen_platform_init_window(ThirteenPlatform* p, thirteen_uint32 width, t
     p.glFramebufferTexture(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, p.texture, 0);
     return true;
 }
+
 void thirteen_platform_pump_messages(ThirteenPlatform* p) {
     XEvent event;
     while p.XPending(p.x11Display) != 0 {
@@ -2994,25 +3501,30 @@ void thirteen_platform_pump_messages(ThirteenPlatform* p) {
         }
     }
 }
+
 void thirteen_platform_set_title(ThirteenPlatform* p, u8* title) {
     p.XStoreName(p.x11Display, p.x11Window, title);
 }
+
 void thirteen_platform_set_fullscreen(ThirteenPlatform* p, bool fullscreen, thirteen_uint32 width, thirteen_uint32 height) {
     ignore p;
     ignore fullscreen;
     ignore width;
     ignore height;
 }
+
 void thirteen_platform_resize_window(ThirteenPlatform* p, thirteen_uint32 width, thirteen_uint32 height, bool isFullscreen) {
     ignore isFullscreen;
     p.XResizeWindow(p.x11Display, p.x11Window, width, height);
     p.glBindTexture(GL_TEXTURE_2D, p.texture);
     p.glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, cast(i32, width), cast(i32, height), 0, GL_RGBA, GL_UNSIGNED_BYTE, null);
 }
+
 ThirteenNativeWindowHandle thirteen_platform_get_window_handle(ThirteenPlatform* p) {
     ignore p;
     return 0;
 }
+
 bool thirteen_platform_do_render(ThirteenPlatform* p, thirteen_uint8* pixels) {
     p.glClear(GL_COLOR_BUFFER_BIT);
     p.glBindTexture(GL_TEXTURE_2D, p.texture);
@@ -3023,6 +3535,7 @@ bool thirteen_platform_do_render(ThirteenPlatform* p, thirteen_uint8* pixels) {
     p.glXSwapBuffers(p.x11Display, p.x11Window);
     return true;
 }
+
 void thirteen_platform_shutdown_window(ThirteenPlatform* p) {
     p.glDeleteFramebuffers(1, &p.framebuffer);
     p.glDeleteTextures(1, &p.texture);
@@ -3032,24 +3545,28 @@ void thirteen_platform_shutdown_window(ThirteenPlatform* p) {
     dlclose(p.glLibrary);
     dlclose(p.x11Library);
 }
+
 bool thirteen_renderer_init(ThirteenRenderer* r, ThirteenPlatform* p, thirteen_uint32 w, thirteen_uint32 h) {
     ignore w;
     ignore h;
     r.platform = p;
     return true;
 }
+
 bool thirteen_renderer_render(ThirteenRenderer* r, thirteen_uint8* pixels, thirteen_uint32 w, thirteen_uint32 h, bool vsync) {
     ignore w;
     ignore h;
     ignore vsync;
     return thirteen_platform_do_render(r.platform, pixels);
 }
+
 bool thirteen_renderer_resize(ThirteenRenderer* r, thirteen_uint32 w, thirteen_uint32 h) {
     ignore r;
     ignore w;
     ignore h;
     return true;
 }
+
 void thirteen_renderer_shutdown(ThirteenRenderer* r) {
     ignore r;
 }
@@ -3059,6 +3576,7 @@ void thirteen_renderer_shutdown(ThirteenRenderer* r) {
 // ========== Platform/Renderer Pointers ==========
 ThirteenPlatform* thirteen_platform_ptr = null;
 ThirteenRenderer* thirteen_renderer_ptr = null;
+
 // ========== Public API ==========
 }
 thirteen_uint8* thirteen_init(thirteen_uint32 width, thirteen_uint32 height, bool fullscreen) {
@@ -3097,6 +3615,7 @@ thirteen_uint8* thirteen_init(thirteen_uint32 width, thirteen_uint32 height, boo
     return thirteen_pixels_buf;
 }
 private {
+
 }
 bool thirteen_render() {
     f64 currentTime;
@@ -3136,21 +3655,25 @@ bool thirteen_render() {
     return !thirteen_should_quit;
 }
 private {
+
 }
 void thirteen_set_vsync(bool enabled) {
     thirteen_vsync_enabled = enabled;
 }
 private {
+
 }
 bool thirteen_get_vsync() {
     return thirteen_vsync_enabled;
 }
 private {
+
 }
 void thirteen_set_application_name(u8* name) {
     _thirteen_strcpy(thirteen_app_name, sizeof(thirteen_app_name), name);
 }
 private {
+
 }
 void thirteen_set_fullscreen(bool fullscreen) {
     if thirteen_is_fullscreen == fullscreen {
@@ -3162,26 +3685,31 @@ void thirteen_set_fullscreen(bool fullscreen) {
     }
 }
 private {
+
 }
 bool thirteen_get_fullscreen() {
     return thirteen_is_fullscreen;
 }
 private {
+
 }
 thirteen_uint32 thirteen_get_width() {
     return thirteen_width;
 }
 private {
+
 }
 thirteen_uint32 thirteen_get_height() {
     return thirteen_height;
 }
 private {
+
 }
 ThirteenNativeWindowHandle thirteen_get_window_handle() {
     return thirteen_platform_get_window_handle(thirteen_platform_ptr);
 }
 private {
+
 }
 thirteen_uint8* thirteen_set_size(thirteen_uint32 width, thirteen_uint32 height) {
     thirteen_uint8* reallocResult;
@@ -3204,23 +3732,27 @@ thirteen_uint8* thirteen_set_size(thirteen_uint32 width, thirteen_uint32 height)
     return thirteen_pixels_buf;
 }
 private {
+
 }
 f64 thirteen_get_delta_time() {
     return thirteen_last_delta_time;
 }
 private {
+
 }
 void thirteen_get_mouse_position(i32* x, i32* y) {
     *x = thirteen_mouse_x;
     *y = thirteen_mouse_y;
 }
 private {
+
 }
 void thirteen_get_mouse_position_last_frame(i32* x, i32* y) {
     *x = thirteen_prev_mouse_x;
     *y = thirteen_prev_mouse_y;
 }
 private {
+
 }
 bool thirteen_get_mouse_button(i32 button) {
     if button >= 0 && button < 3 {
@@ -3229,6 +3761,7 @@ bool thirteen_get_mouse_button(i32 button) {
     return false;
 }
 private {
+
 }
 bool thirteen_get_mouse_button_last_frame(i32 button) {
     if button >= 0 && button < 3 {
@@ -3237,6 +3770,7 @@ bool thirteen_get_mouse_button_last_frame(i32 button) {
     return false;
 }
 private {
+
 }
 bool thirteen_get_key(i32 keyCode) {
     if keyCode >= 0 && keyCode < 256 {
@@ -3245,6 +3779,7 @@ bool thirteen_get_key(i32 keyCode) {
     return false;
 }
 private {
+
 }
 bool thirteen_get_key_last_frame(i32 keyCode) {
     if keyCode >= 0 && keyCode < 256 {
@@ -3253,6 +3788,7 @@ bool thirteen_get_key_last_frame(i32 keyCode) {
     return false;
 }
 private {
+
 }
 void thirteen_shutdown() {
     if thirteen_renderer_ptr != null {
@@ -3331,10 +3867,13 @@ const u32 NSOpenGLPFASamples       = 56;
 const u32 NSOpenGLPFAMultisample   = 59;
 const u32 NSOpenGLPFAAccelerated   = 73;
 const u32 NSOpenGLPFAOpenGLProfile = 99;
+const u32 NSOpenGLProfileVersionLegacy  = 4096;
 const u32 NSOpenGLProfileVersion3_2Core = 12800;
+const u32 NSOpenGLProfileVersion4_1Core = 16640;
 const i32 NSOpenGLContextParameterSwapInterval = 222;
+const i32 NSOpenGLContextParameterSurfaceOpacity = 236;
 
-// Run-loop mode + pasteboard type — Cocoa NSString* globals, linked at
+// Run-loop mode + pasteboard type; Cocoa NSString* globals, linked at
 // load. The run-loop modes are CoreFoundation symbols (toll-free bridged,
 // not Foundation); the pasteboard type is AppKit.
 extern "CoreFoundation" void* NSDefaultRunLoopMode;
@@ -3344,7 +3883,7 @@ when os(macos) { extern "AppKit" void* NSPasteboardTypeString; }
 
 const u64 NSStringEncodingUTF8 = 4;
 
-// NSViewLayerContentsPlacement (NSInteger) — used to pin the layer's
+// NSViewLayerContentsPlacement (NSInteger); used to pin the layer's
 // contents corner while the window resizes.
 const i64 NSViewLayerContentsPlacementScaleAxesIndependently  = 0;
 const i64 NSViewLayerContentsPlacementScaleProportionallyToFit = 1;
@@ -3365,7 +3904,7 @@ const u64 NSBitmapFormatAlphaNonpremultiplied = 2;   // 1 << 1
 // NSWindow occlusion state (NSUInteger bitset)
 const u64 NSWindowOcclusionStateVisible = 2;   // 1 << 1
 
-// NSDragOperation (NSUInteger bitset) — drag-and-drop result codes
+// NSDragOperation (NSUInteger bitset); drag-and-drop result codes
 const u64 NSDragOperationNone    = 0;
 const u64 NSDragOperationCopy    = 1;
 const u64 NSDragOperationLink    = 2;
@@ -3386,8 +3925,26 @@ extern "Metal" void* MTLCreateSystemDefaultDevice();
 const u64 MTLCPUCacheModeDefaultCache = 0;
 const u64 MTLCPUCacheModeWriteCombined = 1;
 
-// QuartzCore CALayer filter name (an NSString* global) — linked at load.
+// QuartzCore CALayer filter name (an NSString* global); linked at load.
 extern "QuartzCore" void* kCAFilterNearest;
+
+// CoreGraphics colour-space name globals; the CAMetalLayer colorspace
+// for sapp_desc.srgb / sapp_desc.hdr (sokol 02-Jul-2026 swapchain update).
+extern "CoreGraphics" {
+    void* kCGColorSpaceSRGB;
+    void* kCGColorSpaceExtendedLinearDisplayP3;
+}
+
+// --- mach absolute time ---------------------------------------
+// sokol_app.h's Apple frame-timing clock.
+struct mach_timebase_info_data_t {
+    u32 numer;
+    u32 denom;
+}
+extern "libSystem.B.dylib" {
+    u64 mach_absolute_time();
+    i32 mach_timebase_info(mach_timebase_info_data_t* info);
+}
 
 // --- libdispatch (GCD) ----------------------------------------
 // C entry points (in libSystem) for the frame semaphore and the
@@ -3410,6 +3967,7 @@ extern "CoreFoundation" {
 }
 extern "CoreGraphics" {
     void* CGColorSpaceCreateDeviceRGB();
+    void* CGColorSpaceCreateWithName(void* name);
     void  CGColorSpaceRelease(void* space);
     void* CGDataProviderCreateWithCFData(void* data);
     void  CGDataProviderRelease(void* provider);
@@ -3463,27 +4021,124 @@ CGPoint CGPointMake(f64 x, f64 y) {
 
 }
 
-when os(macos) {
-// transminc: C #define values surfaced as compile-time configuration
-@define "TARGET_OS_IPHONE" 0
-@define "TARGET_OS_OSX" 1
-@define "TARGET_OS_MAC" 1
-@define "TARGET_OS_SIMULATOR" 0
-@define "VK_ESCAPE" 27
-@define "VK_SPACE" 32
-@define "THIRTEEN_NS_LEFT_MOUSE_DOWN" 1
-@define "THIRTEEN_NS_LEFT_MOUSE_UP" 2
-@define "THIRTEEN_NS_RIGHT_MOUSE_DOWN" 3
-@define "THIRTEEN_NS_RIGHT_MOUSE_UP" 4
-@define "THIRTEEN_NS_MOUSE_MOVED" 5
-@define "THIRTEEN_NS_LEFT_MOUSE_DRAGGED" 6
-@define "THIRTEEN_NS_RIGHT_MOUSE_DRAGGED" 7
-@define "THIRTEEN_NS_KEY_DOWN" 10
-@define "THIRTEEN_NS_KEY_UP" 11
-@define "THIRTEEN_NS_OTHER_MOUSE_DOWN" 25
-@define "THIRTEEN_NS_OTHER_MOUSE_UP" 26
-@define "THIRTEEN_NS_OTHER_MOUSE_DRAGGED" 27
+// --- Borderless + window drag (macOS) ---------------------------------------
+// Decoration is the window's styleMask; borderless is 0. Dragging
+// moves the frame origin from thirteen's own pump instead of calling
+// performWindowDragWithEvent:, which runs its own event loop and
+// would stall the caller's frame loop. Cocoa screen coordinates are
+// bottom-left origin, but anchor and cursor are sampled in the same
+// space so the delta needs no flip.
 
+when os(macos) {
+
+void thirteen_quit() {
+    thirteen_should_quit = true;
+}
+
+void thirteen_get_window_position(i32* x, i32* y) {
+    *x = 0;
+    *y = 0;
+    if thirteen_platform_ptr == null { return; }
+    CGRect f = cast(fn(ObjcId, SEL): CGRect, objc_msgSend)(
+        thirteen_platform_ptr.window, thirteen_sel("frame"));
+    *x = cast(i32, f.origin.x);
+    *y = cast(i32, f.origin.y);
+}
+
+void thirteen_set_window_position(i32 x, i32 y) {
+    if thirteen_platform_ptr == null { return; }
+    cast(fn(ObjcId, SEL, CGPoint): void, objc_msgSend)(
+        thirteen_platform_ptr.window, thirteen_sel("setFrameOrigin:"),
+        CGPointMake(cast(f64, x), cast(f64, y)));
+}
+
+void thirteen_set_decorated(bool decorated) {
+    if thirteen_decorated == decorated { return; }
+    thirteen_decorated = decorated;
+    if thirteen_platform_ptr == null || thirteen_is_fullscreen { return; }
+    // Titled | Closable | Miniaturizable, or Borderless (0).
+    ThirteenNSUInteger mask = 0;
+    if decorated { mask = cast(u64, 1 << 0 | 1 << 1 | 1 << 2); }
+    cast(fn(ObjcId, SEL, ThirteenNSUInteger): void, objc_msgSend)(
+        thirteen_platform_ptr.window, thirteen_sel("setStyleMask:"), mask);
+    // A borderless window is not key-eligible by default; make it
+    // front again so it keeps receiving input.
+    cast(fn(ObjcId, SEL, ObjcId): void, objc_msgSend)(
+        thirteen_platform_ptr.window, thirteen_sel("makeKeyAndOrderFront:"),
+        cast(ObjcId, null));
+}
+
+private {
+// Cursor position in screen coordinates: +[NSEvent mouseLocation].
+CGPoint _t13_mouse_location() {
+    ObjcId nsEvent = cast(ObjcId, objc_getClass("NSEvent"));
+    return cast(fn(ObjcId, SEL): CGPoint, objc_msgSend)(
+        nsEvent, thirteen_sel("mouseLocation"));
+}
+}
+
+void thirteen_begin_window_drag() {
+    if thirteen_platform_ptr == null || thirteen_is_fullscreen { return; }
+    CGPoint pt = _t13_mouse_location();
+    noinit i32 wx;
+    noinit i32 wy;
+    thirteen_get_window_position(&wx, &wy);
+    thirteen_drag_cursor_x = cast(i32, pt.x);
+    thirteen_drag_cursor_y = cast(i32, pt.y);
+    thirteen_drag_window_x = wx;
+    thirteen_drag_window_y = wy;
+    thirteen_dragging = true;
+}
+
+// Cocoa drops need an NSDraggingDestination on the content view,
+// which means registering a class at runtime; not implemented. The
+// call is accepted so app code stays portable.
+void thirteen_set_file_drop(bool enabled) { ignore enabled; }
+
+// NSFloatingWindowLevel = 3, NSNormalWindowLevel = 0.
+void thirteen_set_always_on_top(bool on) {
+    thirteen_always_on_top = on;
+    if thirteen_platform_ptr == null { return; }
+    ThirteenNSInteger level = 0;
+    if on { level = 3; }
+    cast(fn(ObjcId, SEL, ThirteenNSInteger): void, objc_msgSend)(
+        thirteen_platform_ptr.window, thirteen_sel("setLevel:"), level);
+}
+
+void thirteen_get_screen_size(i32* w, i32* h) {
+    *w = 0;
+    *h = 0;
+    ObjcId screenClass = cast(ObjcId, objc_getClass("NSScreen"));
+    ObjcId main = cast(fn(ObjcId, SEL): ObjcId, objc_msgSend)(
+        screenClass, thirteen_sel("mainScreen"));
+    if main == null { return; }
+    CGRect f = cast(fn(ObjcId, SEL): CGRect, objc_msgSend)(main, thirteen_sel("frame"));
+    *w = cast(i32, f.size.width);
+    *h = cast(i32, f.size.height);
+}
+
+void thirteen_minimize() {
+    if thirteen_platform_ptr == null { return; }
+    cast(fn(ObjcId, SEL, ObjcId): void, objc_msgSend)(
+        thirteen_platform_ptr.window, thirteen_sel("miniaturize:"), cast(ObjcId, null));
+}
+
+void thirteen_drag_update() {
+    if !thirteen_dragging { return; }
+    if thirteen_platform_ptr == null || !thirteen_mouse_buttons[0] {
+        thirteen_dragging = false;
+        return;
+    }
+    CGPoint pt = _t13_mouse_location();
+    i32 x = thirteen_drag_window_x + (cast(i32, pt.x) - thirteen_drag_cursor_x);
+    i32 y = thirteen_drag_window_y + (cast(i32, pt.y) - thirteen_drag_cursor_y);
+    thirteen_apply_snap(&x, &y, cast(i32, thirteen_width), cast(i32, thirteen_height));
+    thirteen_set_window_position(x, y);
+}
+
+}  // when os(macos) — borderless + drag
+
+when os(macos) {
 type NSInteger = i64;
 type NSUInteger = u64;
 type CGFloat = f64;
@@ -3494,6 +4149,7 @@ type size_t = u64;
 type UInt8 = u8;
 type CFIndex = i64;
 type CFDataRef = void*;
+type CFStringRef = void*;
 type CGColorSpaceRef = void*;
 type CGDataProviderRef = void*;
 type CGImageRef = void*;
@@ -3520,7 +4176,7 @@ type NSBackingStoreType = NSUInteger;
 type NSTrackingAreaOptions = NSUInteger;
 type NSDragOperation = NSUInteger;
 type NSStringEncoding = NSUInteger;
-type NSOpenGLPixelFormatAttribute = NSUInteger;
+type NSOpenGLPixelFormatAttribute = u32;
 type NSViewLayerContentsPlacement = NSInteger;
 type NSApplicationDelegateReply = NSInteger;
 type NSModalResponse = NSInteger;
@@ -3746,6 +4402,11 @@ struct MTLScissorRect {
     NSUInteger height;
 }
 
+struct mach_timebase_info_data_t {
+    u32 numer;
+    u32 denom;
+}
+
 struct ThirteenMTLSize {
     ThirteenNSUInteger width;
     ThirteenNSUInteger height;
@@ -3785,18 +4446,21 @@ NSRect NSMakeRect(CGFloat x, CGFloat y, CGFloat w, CGFloat h) {
     r.size.height = h;
     return r;
 }
+
 NSPoint NSMakePoint(CGFloat x, CGFloat y) {
     noinit NSPoint p;
     p.x = x;
     p.y = y;
     return p;
 }
+
 NSSize NSMakeSize(CGFloat w, CGFloat h) {
     noinit NSSize s;
     s.width = w;
     s.height = h;
     return s;
 }
+
 CGRect CGRectMake(CGFloat x, CGFloat y, CGFloat w, CGFloat h) {
     noinit CGRect r;
     r.origin.x = x;
@@ -3805,12 +4469,14 @@ CGRect CGRectMake(CGFloat x, CGFloat y, CGFloat w, CGFloat h) {
     r.size.height = h;
     return r;
 }
+
 NSRange NSMakeRange(NSUInteger location, NSUInteger length) {
     noinit NSRange r;
     r.location = location;
     r.length = length;
     return r;
 }
+
 MTLOrigin MTLOriginMake(NSUInteger x, NSUInteger y, NSUInteger z) {
     noinit MTLOrigin o;
     o.x = x;
@@ -3818,6 +4484,7 @@ MTLOrigin MTLOriginMake(NSUInteger x, NSUInteger y, NSUInteger z) {
     o.z = z;
     return o;
 }
+
 MTLSize MTLSizeMake(NSUInteger w, NSUInteger h, NSUInteger d) {
     noinit MTLSize s;
     s.width = w;
@@ -3825,6 +4492,7 @@ MTLSize MTLSizeMake(NSUInteger w, NSUInteger h, NSUInteger d) {
     s.depth = d;
     return s;
 }
+
 MTLRegion MTLRegionMake2D(NSUInteger x, NSUInteger y, NSUInteger w, NSUInteger h) {
     noinit MTLRegion r;
     r.origin.x = x;
@@ -3835,6 +4503,7 @@ MTLRegion MTLRegionMake2D(NSUInteger x, NSUInteger y, NSUInteger w, NSUInteger h
     r.size.depth = 1;
     return r;
 }
+
 MTLRegion MTLRegionMake3D(NSUInteger x, NSUInteger y, NSUInteger z, NSUInteger w, NSUInteger h, NSUInteger d) {
     noinit MTLRegion r;
     r.origin.x = x;
@@ -3845,6 +4514,7 @@ MTLRegion MTLRegionMake3D(NSUInteger x, NSUInteger y, NSUInteger z, NSUInteger w
     r.size.depth = d;
     return r;
 }
+
 MTLClearColor MTLClearColorMake(f64 red, f64 green, f64 blue, f64 alpha) {
     noinit MTLClearColor c;
     c.red = red;
@@ -3855,44 +4525,50 @@ MTLClearColor MTLClearColorMake(f64 red, f64 green, f64 blue, f64 alpha) {
 }
 }
 // ========== Internal State ==========
-private { thirteen_uint32 thirteen_width = 320; }
-private { thirteen_uint32 thirteen_height = 200; }
-private { bool thirteen_should_quit = false; }
-private { bool thirteen_vsync_enabled = true; }
-private { bool thirteen_is_fullscreen = false; }
-private { u8[256] thirteen_app_name = {84, 104, 105, 114, 116, 101, 101, 110, 65, 112, 112, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}; }
-private { f64 thirteen_last_frame_time = 0.0; }
-private { f64 thirteen_last_delta_time = 0.0; }
-private { f64 thirteen_frame_time_sum = 0.0; }
-private { i32 thirteen_frame_count = 0; }
-private { f64 thirteen_average_fps = 0.0; }
-private { f64 thirteen_title_update_timer = 0.0; }
-private { i32 thirteen_mouse_x = 0; }
-private { i32 thirteen_mouse_y = 0; }
-private { i32 thirteen_prev_mouse_x = 0; }
-private { i32 thirteen_prev_mouse_y = 0; }
-private { bool[3] thirteen_mouse_buttons = {false, false, false}; }
-private { bool[3] thirteen_prev_mouse_buttons = {false, false, false}; }
-private { bool[256] thirteen_keys; }
-private { bool[256] thirteen_prev_keys; }
-private { thirteen_uint8* thirteen_pixels_buf = null; }
-// ========== Timing ==========
 private {
+thirteen_uint32 thirteen_width = 320;
+thirteen_uint32 thirteen_height = 200;
+bool thirteen_should_quit = false;
+bool thirteen_vsync_enabled = true;
+bool thirteen_is_fullscreen = false;
+u8[256] thirteen_app_name = {
+    84, 104, 105, 114, 116, 101, 101, 110, 65, 112, 112, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0,
+};
+f64 thirteen_last_frame_time = 0.0;
+f64 thirteen_last_delta_time = 0.0;
+f64 thirteen_frame_time_sum = 0.0;
+i32 thirteen_frame_count = 0;
+f64 thirteen_average_fps = 0.0;
+f64 thirteen_title_update_timer = 0.0;
+i32 thirteen_mouse_x = 0;
+i32 thirteen_mouse_y = 0;
+i32 thirteen_prev_mouse_x = 0;
+i32 thirteen_prev_mouse_y = 0;
+bool[3] thirteen_mouse_buttons = {false, false, false};
+bool[3] thirteen_prev_mouse_buttons = {false, false, false};
+bool[256] thirteen_keys;
+bool[256] thirteen_prev_keys;
+thirteen_uint8* thirteen_pixels_buf = null;
+
+// ========== Timing ==========
 f64 thirteen_now_seconds() {
-    when defined(THIRTEEN_PLATFORM_WINDOWS) {
-        // TODO transminc: untranslatable platform branch
-    } else when arch(wasm) {
-    } else {
-        timespec ts;
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-        return cast(f64, ts.tv_sec) + cast(f64, ts.tv_nsec) / 1000000000.0;
-    }
+    return cast(f64, qpc()) / cast(f64, qpf());
 }
 }
+
 private {
 SEL thirteen_sel(u8* name) {
     return sel_registerName(name);
 }
+
 bool thirteen_platform_init_window(ThirteenPlatform* p, thirteen_uint32 width, thirteen_uint32 height) {
     ObjcId nsApplicationClass;
     ObjcId nsWindowClass;
@@ -3927,6 +4603,7 @@ bool thirteen_platform_init_window(ThirteenPlatform* p, thirteen_uint32 width, t
     cast(fn(ObjcId, SEL, bool): void, objc_msgSend)(p.app, thirteen_sel("activateIgnoringOtherApps:"), true);
     return true;
 }
+
 void thirteen_platform_pump_messages(ThirteenPlatform* p) {
     ObjcId dateClass;
     ObjcId distantPast;
@@ -3997,6 +4674,7 @@ void thirteen_platform_pump_messages(ThirteenPlatform* p) {
         }
     }
 }
+
 void thirteen_platform_set_title(ThirteenPlatform* p, u8* title) {
     ObjcId nsStringClass;
     ObjcId nsTitle;
@@ -4007,6 +4685,7 @@ void thirteen_platform_set_title(ThirteenPlatform* p, u8* title) {
     nsTitle = cast(fn(ObjcId, SEL, u8*): ObjcId, objc_msgSend)(nsStringClass, thirteen_sel("stringWithUTF8String:"), title);
     cast(fn(ObjcId, SEL, ObjcId): void, objc_msgSend)(p.window, thirteen_sel("setTitle:"), nsTitle);
 }
+
 void thirteen_platform_set_fullscreen(ThirteenPlatform* p, bool fullscreen, thirteen_uint32 width, thirteen_uint32 height) {
     ignore fullscreen;
     ignore width;
@@ -4015,6 +4694,7 @@ void thirteen_platform_set_fullscreen(ThirteenPlatform* p, bool fullscreen, thir
         cast(fn(ObjcId, SEL, ObjcId): void, objc_msgSend)(p.window, thirteen_sel("toggleFullScreen:"), cast(ObjcId, null));
     }
 }
+
 void thirteen_platform_resize_window(ThirteenPlatform* p, thirteen_uint32 width, thirteen_uint32 height, bool isFullscreen) {
     noinit CGSize contentSize;
     if !p.window || isFullscreen {
@@ -4023,9 +4703,11 @@ void thirteen_platform_resize_window(ThirteenPlatform* p, thirteen_uint32 width,
     contentSize = CGSizeMake(cast(f64, width), cast(f64, height));
     cast(fn(ObjcId, SEL, CGSize): void, objc_msgSend)(p.window, thirteen_sel("setContentSize:"), contentSize);
 }
+
 ThirteenNativeWindowHandle thirteen_platform_get_window_handle(ThirteenPlatform* p) {
     return p.contentView;
 }
+
 void thirteen_platform_shutdown_window(ThirteenPlatform* p) {
     if p.window != null {
         cast(fn(ObjcId, SEL): void, objc_msgSend)(p.window, thirteen_sel("close"));
@@ -4034,6 +4716,7 @@ void thirteen_platform_shutdown_window(ThirteenPlatform* p) {
     p.contentView = null;
     p.app = null;
 }
+
 bool thirteen_renderer_ensure_upload_buffer(ThirteenRenderer* r, thirteen_uint32 width, thirteen_uint32 height) {
     u64 requiredSize = cast(u64, width) * cast(u64, height) * 4;
     if r.uploadBuffer && requiredSize == r.uploadSize {
@@ -4050,6 +4733,7 @@ bool thirteen_renderer_ensure_upload_buffer(ThirteenRenderer* r, thirteen_uint32
     r.uploadSize = requiredSize;
     return true;
 }
+
 bool thirteen_renderer_init(ThirteenRenderer* r, ThirteenPlatform* p, thirteen_uint32 width, thirteen_uint32 height) {
     ObjcId layerClass;
     noinit CGRect layerFrame;
@@ -4081,6 +4765,7 @@ bool thirteen_renderer_init(ThirteenRenderer* r, ThirteenPlatform* p, thirteen_u
     r.bufferHeight = height;
     return thirteen_renderer_ensure_upload_buffer(r, width, height);
 }
+
 bool thirteen_renderer_render(ThirteenRenderer* r, thirteen_uint8* pixels, thirteen_uint32 width, thirteen_uint32 height, bool vsync) {
     ObjcId drawable;
     ObjcId texture;
@@ -4123,6 +4808,7 @@ bool thirteen_renderer_render(ThirteenRenderer* r, thirteen_uint8* pixels, thirt
     cast(fn(ObjcId, SEL): void, objc_msgSend)(commandBuffer, thirteen_sel("commit"));
     return true;
 }
+
 bool thirteen_renderer_resize(ThirteenRenderer* r, thirteen_uint32 width, thirteen_uint32 height) {
     r.bufferWidth = width;
     r.bufferHeight = height;
@@ -4132,6 +4818,7 @@ bool thirteen_renderer_resize(ThirteenRenderer* r, thirteen_uint32 width, thirte
     }
     return thirteen_renderer_ensure_upload_buffer(r, width, height);
 }
+
 void thirteen_renderer_shutdown(ThirteenRenderer* r) {
     if r.uploadBuffer != null {
         cast(fn(ObjcId, SEL): void, objc_msgSend)(r.uploadBuffer, thirteen_sel("release"));
@@ -4154,6 +4841,7 @@ void thirteen_renderer_shutdown(ThirteenRenderer* r) {
 // ========== Platform/Renderer Pointers ==========
 ThirteenPlatform* thirteen_platform_ptr = null;
 ThirteenRenderer* thirteen_renderer_ptr = null;
+
 // ========== Public API ==========
 }
 thirteen_uint8* thirteen_init(thirteen_uint32 width, thirteen_uint32 height, bool fullscreen) {
@@ -4192,6 +4880,7 @@ thirteen_uint8* thirteen_init(thirteen_uint32 width, thirteen_uint32 height, boo
     return thirteen_pixels_buf;
 }
 private {
+
 }
 bool thirteen_render() {
     f64 currentTime;
@@ -4231,21 +4920,25 @@ bool thirteen_render() {
     return !thirteen_should_quit;
 }
 private {
+
 }
 void thirteen_set_vsync(bool enabled) {
     thirteen_vsync_enabled = enabled;
 }
 private {
+
 }
 bool thirteen_get_vsync() {
     return thirteen_vsync_enabled;
 }
 private {
+
 }
 void thirteen_set_application_name(u8* name) {
     _thirteen_strcpy(thirteen_app_name, sizeof(thirteen_app_name), name);
 }
 private {
+
 }
 void thirteen_set_fullscreen(bool fullscreen) {
     if thirteen_is_fullscreen == fullscreen {
@@ -4257,26 +4950,31 @@ void thirteen_set_fullscreen(bool fullscreen) {
     }
 }
 private {
+
 }
 bool thirteen_get_fullscreen() {
     return thirteen_is_fullscreen;
 }
 private {
+
 }
 thirteen_uint32 thirteen_get_width() {
     return thirteen_width;
 }
 private {
+
 }
 thirteen_uint32 thirteen_get_height() {
     return thirteen_height;
 }
 private {
+
 }
 ThirteenNativeWindowHandle thirteen_get_window_handle() {
     return thirteen_platform_get_window_handle(thirteen_platform_ptr);
 }
 private {
+
 }
 thirteen_uint8* thirteen_set_size(thirteen_uint32 width, thirteen_uint32 height) {
     thirteen_uint8* reallocResult;
@@ -4299,23 +4997,27 @@ thirteen_uint8* thirteen_set_size(thirteen_uint32 width, thirteen_uint32 height)
     return thirteen_pixels_buf;
 }
 private {
+
 }
 f64 thirteen_get_delta_time() {
     return thirteen_last_delta_time;
 }
 private {
+
 }
 void thirteen_get_mouse_position(i32* x, i32* y) {
     *x = thirteen_mouse_x;
     *y = thirteen_mouse_y;
 }
 private {
+
 }
 void thirteen_get_mouse_position_last_frame(i32* x, i32* y) {
     *x = thirteen_prev_mouse_x;
     *y = thirteen_prev_mouse_y;
 }
 private {
+
 }
 bool thirteen_get_mouse_button(i32 button) {
     if button >= 0 && button < 3 {
@@ -4324,6 +5026,7 @@ bool thirteen_get_mouse_button(i32 button) {
     return false;
 }
 private {
+
 }
 bool thirteen_get_mouse_button_last_frame(i32 button) {
     if button >= 0 && button < 3 {
@@ -4332,6 +5035,7 @@ bool thirteen_get_mouse_button_last_frame(i32 button) {
     return false;
 }
 private {
+
 }
 bool thirteen_get_key(i32 keyCode) {
     if keyCode >= 0 && keyCode < 256 {
@@ -4340,6 +5044,7 @@ bool thirteen_get_key(i32 keyCode) {
     return false;
 }
 private {
+
 }
 bool thirteen_get_key_last_frame(i32 keyCode) {
     if keyCode >= 0 && keyCode < 256 {
@@ -4348,6 +5053,7 @@ bool thirteen_get_key_last_frame(i32 keyCode) {
     return false;
 }
 private {
+
 }
 void thirteen_shutdown() {
     if thirteen_renderer_ptr != null {
@@ -4543,5 +5249,44 @@ export void thirteen_set_key(i32 keycode, bool down) {
 export void thirteen_signal_quit() {
     thirteen_should_quit = true;
 }
+
+// A canvas has no OS frame to hide and no window origin to move, so
+// the decoration and drag calls exist only to keep app code building
+// on every target.
+void thirteen_quit() {
+    thirteen_should_quit = true;
+}
+
+void thirteen_set_decorated(bool decorated) {
+    thirteen_decorated = decorated;
+}
+
+void thirteen_get_window_position(i32* x, i32* y) {
+    *x = 0;
+    *y = 0;
+}
+
+void thirteen_set_window_position(i32 x, i32 y) {
+    ignore x;
+    ignore y;
+}
+
+void thirteen_begin_window_drag() { }
+
+void thirteen_drag_update() { }
+
+void thirteen_get_screen_size(i32* w, i32* h) {
+    *w = cast(i32, thirteen_width);
+    *h = cast(i32, thirteen_height);
+}
+
+void thirteen_minimize() { }
+
+// The host page could route HTML5 drop events into
+// thirteen_dropped_buf; nothing does yet.
+void thirteen_set_file_drop(bool enabled) { ignore enabled; }
+
+// A canvas has no window level to raise.
+void thirteen_set_always_on_top(bool on) { thirteen_always_on_top = on; }
 
 }
