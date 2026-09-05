@@ -335,8 +335,8 @@ when os(windows) {
 
 // --- kernel32 ---------------------------------------------------------------
 extern "kernel32.dll" void* GetModuleHandleA(u8* lpModuleName);
-extern "kernel32.dll" i32 QueryPerformanceCounter(void* lpPerformanceCount);
-extern "kernel32.dll" i32 QueryPerformanceFrequency(void* lpFrequency);
+i32 QueryPerformanceCounter(void* lpPerformanceCount) { *cast(i64*, lpPerformanceCount) = qpc(); return 1; }
+i32 QueryPerformanceFrequency(void* lpFrequency)      { *cast(i64*, lpFrequency) = qpf(); return 1; }
 extern "kernel32.dll" u32 GetLastError();
 extern "kernel32.dll" i32 CloseHandle(void* hObject);
 extern "kernel32.dll" void* CreateEventA(void* lpEventAttributes, i32 bManualReset,
@@ -5179,7 +5179,7 @@ u8* thirteen_set_size(u32 width, u32 height) {
     if width == thirteen_width && height == thirteen_height {
         return thirteen_pixels_buf;
     }
-    free(cast(void*, thirteen_pixels_buf));
+    free(thirteen_pixels_buf);
     thirteen_pixels_buf = alloc<u8>(cast(i32, width * height * cast(u32, 4)));
     if thirteen_pixels_buf == null { return null; }
     thirteen_width = width;
@@ -5222,7 +5222,7 @@ bool thirteen_get_key_last_frame(i32 keycode) {
 
 void thirteen_shutdown() {
     if thirteen_pixels_buf != null {
-        free(cast(void*, thirteen_pixels_buf));
+        free(thirteen_pixels_buf);
         thirteen_pixels_buf = null;
     }
 }
