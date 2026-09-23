@@ -99,6 +99,20 @@
 //   void thirteen_set_always_on_top(bool on)
 //   bool thirteen_get_always_on_top()
 //
+//   f64  thirteen_get_dpi_scale()
+//     The OS display scale of the primary screen: 1.5 at a 150%
+//     windows DPI setting, 2.0 on a retina mac, 1.0 where the arm
+//     cannot tell (linux, wasm). Pixel-art apps can start at an
+//     integer zoom when this is fractional, so the OS stretch has a
+//     denser source to work from.
+//
+//   void thirteen_show()
+//     Reveal the window. On windows it is created hidden and
+//     thirteen_run shows it once the first frame has been presented,
+//     so slow startup work never flashes an unpainted stub; a
+//     hand-written thirteen_render loop must call this itself. The
+//     other arms show during init and take it as a no-op.
+//
 //   void thirteen_set_snap(i32 pixels)
 //     While dragging, pull the window flush to a screen edge when it
 //     comes within `pixels` of one. 0 (the default) disables it.
@@ -162,7 +176,15 @@
 
 when os(windows) || os(linux) || os(macos) {
     void thirteen_run(fn(): void on_frame) {
+        i32 rendered = 0;
         while thirteen_render() && !thirteen_get_key(VK_ESCAPE) {
+            // Show after the second render: the first presents the
+            // still-empty buffer, the second presents on_frame's
+            // first real frame.
+            if rendered < 2 {
+                rendered++;
+                if rendered == 2 { thirteen_show(); }
+            }
             thirteen_drag_update();
             on_frame();
         }
@@ -335,8 +357,10 @@ when os(windows) {
 
 // --- kernel32 ---------------------------------------------------------------
 extern "kernel32.dll" void* GetModuleHandleA(u8* lpModuleName);
-i32 QueryPerformanceCounter(void* lpPerformanceCount) { *cast(i64*, lpPerformanceCount) = qpc(); return 1; }
-i32 QueryPerformanceFrequency(void* lpFrequency)      { *cast(i64*, lpFrequency) = qpf(); return 1; }
+// No QueryPerformanceCounter/Frequency here: ext_libc defines both over
+// the same qpc()/qpf() builtins, and a second definition collides with
+// it. The compose rewrites thirteen_now_seconds (their only caller) to
+// call the builtins directly, like the linux and macos arms.
 extern "kernel32.dll" u32 GetLastError();
 extern "kernel32.dll" i32 CloseHandle(void* hObject);
 extern "kernel32.dll" void* CreateEventA(void* lpEventAttributes, i32 bManualReset,
@@ -557,6 +581,8 @@ extern "user32.dll" i64 CallWindowProcW(void* lpPrevWndFunc, void* hWnd, u32 Msg
 extern "shell32.dll" void DragAcceptFiles(void* hWnd, i32 fAccept);
 extern "shell32.dll" u32 DragQueryFileA(void* hDrop, u32 iFile, u8* lpszFile, u32 cch);
 extern "shell32.dll" void DragFinish(void* hDrop);
+extern "user32.dll" i32 EnumDisplaySettingsA(u8* lpszDeviceName, u32 iModeNum,
+                                             void* lpDevMode);
 
 u32 SWP_NOACTIVATE = cast(u32, 16);   // 0x0010
 
@@ -632,6 +658,44 @@ void thirteen_get_screen_size(i32* w, i32* h) {
     *h = GetSystemMetrics(SM_CYSCREEN);
 }
 
+// DEVMODEA, the exact Win32 layout. Only the display-mode fields are
+// named; the printer-only members are carried as padding.
+struct _T13DevModeA {
+    u8[32] dmDeviceName;
+    u16 dmSpecVersion;
+    u16 dmDriverVersion;
+    u16 dmSize;
+    u16 dmDriverExtra;
+    u32 dmFields;
+    u8[16] dmPosition;
+    i16 dmColor;
+    i16 dmDuplex;
+    i16 dmYResolution;
+    i16 dmTTOption;
+    i16 dmCollate;
+    u8[32] dmFormName;
+    u16 dmLogPixels;
+    u32 dmBitsPerPel;
+    u32 dmPelsWidth;
+    u32 dmPelsHeight;
+    u8[40] dmTail;
+}
+
+const u32 ENUM_CURRENT_SETTINGS = cast(u32, 4294967295);
+
+// The process is not DPI aware, so GetSystemMetrics reports the
+// virtualized desktop while EnumDisplaySettings reports the real
+// display mode; their ratio is the factor the OS stretches the window
+// by. 1.0 if the mode cannot be read.
+f64 thirteen_get_dpi_scale() {
+    _T13DevModeA dm;
+    dm.dmSize = cast(u16, sizeof(_T13DevModeA));
+    if EnumDisplaySettingsA(null, ENUM_CURRENT_SETTINGS, &dm) == 0 { return 1.0; }
+    i32 vw = GetSystemMetrics(SM_CXSCREEN);
+    if vw <= 0 || dm.dmPelsWidth == 0 { return 1.0; }
+    return cast(f64, dm.dmPelsWidth) / cast(f64, vw);
+}
+
 // --- file drop ---
 // The transpiled body owns the window procedure, so rather than
 // patch it, enabling drops subclasses the window and forwards
@@ -675,6 +739,15 @@ void thirteen_set_file_drop(bool enabled) {
 void thirteen_minimize() {
     if thirteen_platform_ptr == null { return; }
     ShowWindow(thirteen_platform_ptr.hwnd, SW_MINIMIZE);
+}
+
+// First reveal of the window init created hidden (the compose drops
+// init_window's ShowWindow). thirteen_run calls this once the first
+// frame has been presented; a hand-written thirteen_render loop has to
+// call it itself or the window never appears.
+void thirteen_show() {
+    if thirteen_platform_ptr == null { return; }
+    ShowWindow(thirteen_platform_ptr.hwnd, SW_SHOW);
 }
 
 void thirteen_set_always_on_top(bool on) {
@@ -1593,8 +1666,6 @@ struct ThirteenRenderer {
     bool unrestrictedBufferTextureCopyPitchSupported;
 }
 
-// ========== Platform-Specific Includes ==========
-// ========== Common Includes ==========
 // ========== Internal State ==========
 private {
 thirteen_uint32 thirteen_width = 320;
@@ -1631,11 +1702,7 @@ thirteen_uint8* thirteen_pixels_buf = null;
 
 // ========== Timing ==========
 f64 thirteen_now_seconds() {
-    noinit LARGE_INTEGER freq;
-    noinit LARGE_INTEGER counter;
-    QueryPerformanceFrequency(&freq);
-    QueryPerformanceCounter(&counter);
-    return cast(f64, counter.QuadPart) / cast(f64, freq.QuadPart);
+    return cast(f64, qpc()) / cast(f64, qpf());
 }
 // ==========================================================================
 // WINDOWS BACKEND
@@ -1675,7 +1742,6 @@ bool thirteen_platform_init_window(ThirteenPlatform* p, thirteen_uint32 width, t
     if p.hwnd == null {
         return false;
     }
-    ShowWindow(p.hwnd, SW_SHOW);
     return true;
 }
 
@@ -2637,6 +2703,13 @@ void thirteen_minimize() {
     ignore _t13_XIconifyWindow(d, thirteen_platform_ptr.x11Window, DefaultScreen(d));
 }
 
+// The window is mapped during init on this arm.
+void thirteen_show() { }
+
+// No single answer on X11: Xft.dpi, xrandr and the toolkit all
+// disagree, so report unscaled rather than pick one.
+f64 thirteen_get_dpi_scale() { return 1.0; }
+
 void thirteen_drag_update() {
     if !thirteen_dragging { return; }
     if !thirteen_mouse_buttons[0] {
@@ -2699,8 +2772,6 @@ type XkbDescPtr = XkbDescRec*;
 type XcursorPixel = u32;
 type XcursorDim = u32;
 type XcursorBool = u32;
-// ========== Platform-Specific Includes ==========
-// ========== Common Includes ==========
 // ========== Type Definitions ==========
 type thirteen_uint8 = u8;
 type thirteen_uint32 = u32;
@@ -4131,6 +4202,19 @@ void thirteen_minimize() {
         thirteen_platform_ptr.window, thirteen_sel("miniaturize:"), cast(ObjcId, null));
 }
 
+// The window is ordered front during init on this arm.
+void thirteen_show() { }
+
+// CGFloat backingScaleFactor: 2.0 on a retina display, 1.0 otherwise.
+f64 thirteen_get_dpi_scale() {
+    ObjcId screenClass = cast(ObjcId, objc_getClass("NSScreen"));
+    ObjcId main = cast(fn(ObjcId, SEL): ObjcId, objc_msgSend)(
+        screenClass, thirteen_sel("mainScreen"));
+    if main == null { return 1.0; }
+    return cast(fn(ObjcId, SEL): f64, objc_msgSend)(
+        main, thirteen_sel("backingScaleFactor"));
+}
+
 void thirteen_drag_update() {
     if !thirteen_dragging { return; }
     if thirteen_platform_ptr == null || !thirteen_mouse_buttons[0] {
@@ -4336,8 +4420,6 @@ type dispatch_data_t = void*;
 type dispatch_queue_t = void*;
 type dispatch_object_t = void*;
 type dispatch_block_t = void*;
-// ========== Platform-Specific Includes ==========
-// ========== Common Includes ==========
 // ========== Type Definitions ==========
 type thirteen_uint8 = u8;
 type thirteen_uint32 = u32;
@@ -4595,7 +4677,7 @@ bool thirteen_platform_init_window(ThirteenPlatform* p, thirteen_uint32 width, t
     if windowAlloc == null {
         return false;
     }
-    styleMask = cast(u64, 1 << 0 | 1 << 1 | 1 << 2);
+    styleMask = 1 << 0 | 1 << 1 | 1 << 2;
     backingStoreBuffered = 2;
     frame = CGRectMake(100.0, 100.0, cast(f64, width), cast(f64, height));
     p.window = cast(fn(ObjcId, SEL, CGRect, ThirteenNSUInteger, ThirteenNSUInteger, bool): ObjcId, objc_msgSend)(windowAlloc, thirteen_sel("initWithContentRect:styleMask:backing:defer:"), frame, styleMask, backingStoreBuffered, false);
@@ -4625,7 +4707,7 @@ void thirteen_platform_pump_messages(ThirteenPlatform* p) {
     distantPast = cast(fn(ObjcId, SEL): ObjcId, objc_msgSend)(dateClass, thirteen_sel("distantPast"));
     nsStringClass = cast(ObjcId, objc_getClass("NSString"));
     defaultMode = cast(fn(ObjcId, SEL, u8*): ObjcId, objc_msgSend)(nsStringClass, thirteen_sel("stringWithUTF8String:"), "kCFRunLoopDefaultMode");
-    anyMask = cast(u64, ~0);
+    anyMask = ~0;
     while true {
         ThirteenNSInteger eventType;
         bool isMouseDownEvent;
@@ -5289,6 +5371,12 @@ void thirteen_get_screen_size(i32* w, i32* h) {
 }
 
 void thirteen_minimize() { }
+
+// A canvas is visible from the start.
+void thirteen_show() { }
+
+// devicePixelRatio lives in the host JS and is not wired through.
+f64 thirteen_get_dpi_scale() { return 1.0; }
 
 // The host page could route HTML5 drop events into
 // thirteen_dropped_buf; nothing does yet.
