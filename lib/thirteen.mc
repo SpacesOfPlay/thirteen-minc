@@ -1666,6 +1666,7 @@ struct ThirteenRenderer {
     bool unrestrictedBufferTextureCopyPitchSupported;
 }
 
+// ========== Platform-Specific Includes ==========
 // ========== Internal State ==========
 private {
 thirteen_uint32 thirteen_width = 320;
